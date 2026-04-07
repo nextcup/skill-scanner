@@ -51,6 +51,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from ..config.config import load_dotenv
+
 # Default configuration
 DEFAULT_CONFIG = {
     "severity_threshold": "high",  # Block commits on HIGH or CRITICAL
@@ -279,6 +281,7 @@ def main(args: list[str] | None = None) -> int:
     Returns:
         Exit code (0 = success, 1 = blocked)
     """
+    load_dotenv()
     parser = argparse.ArgumentParser(description="Pre-commit hook for scanning agent skills")
     parser.add_argument(
         "--severity",

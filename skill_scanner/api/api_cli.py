@@ -21,9 +21,12 @@ CLI for running the API server.
 import argparse
 import sys
 
+from ..config.config import load_dotenv
+
 
 def main():
     """Main entry point for API server CLI."""
+    load_dotenv()
     parser = argparse.ArgumentParser(
         description="Skill Scanner API Server",
         formatter_class=argparse.RawDescriptionHelpFormatter,

@@ -64,6 +64,8 @@ except (ImportError, ModuleNotFoundError):
     MetaAnalyzer = None
     apply_meta_analysis_to_results = None
 
+from ..config.config import load_dotenv
+
 logger = logging.getLogger("skill_scanner.cli")
 
 
@@ -917,6 +919,7 @@ def _run_interactive_wizard() -> int:
 
 def main() -> int:
     """Main CLI entry point."""
+    load_dotenv()
     parser = build_parser()
 
     # -- dispatch ----------------------------------------------------------

@@ -150,3 +150,25 @@ class Config:
                         os.environ[key.strip()] = value.strip()
 
         return cls.from_env()
+
+
+def load_dotenv(env_path: Path | None = None) -> None:
+    """Load environment variables from a ``.env`` file.
+
+    Existing environment variables take precedence — ``.env`` values are only
+    set when the variable is not already present (``os.environ.setdefault``).
+
+    Args:
+        env_path: Explicit path to the ``.env`` file.  Defaults to
+            ``.env`` in the current working directory.
+    """
+    path = env_path or Path(".env")
+    if not path.exists():
+        return
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            os.environ.setdefault(key.strip(), value.strip())
