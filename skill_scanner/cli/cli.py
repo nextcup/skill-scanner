@@ -29,6 +29,7 @@ from pathlib import Path
 
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn, TimeRemainingColumn
 
 from .. import __version__
 from ..core.analyzer_factory import build_analyzers
@@ -479,13 +480,43 @@ def scan_all_command(args: argparse.Namespace) -> int:
 
     try:
         check_overlap = getattr(args, "check_overlap", False)
-        report = scanner.scan_directory(
-            skills_dir,
-            recursive=args.recursive,
-            check_overlap=check_overlap,
-            lenient=lenient,
-            skill_file=skill_file,
-        )
+
+        # Use rich progress bar in interactive terminals; skip for pipes/redirects
+        if sys.stdout.isatty():
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TaskProgressColumn(),
+                TimeRemainingColumn(),
+                console=Console(file=sys.stderr),
+            ) as progress:
+                scan_task = progress.add_task("Scanning skills...", total=100)
+
+                def _on_skill(name: str, current: int, total: int) -> None:
+                    progress.update(
+                        scan_task,
+                        completed=int(current / total * 100) if total else 0,
+                        total=100,
+                        description=f"[{current}/{total}] Scanning [bold]{name}[/bold]",
+                    )
+
+                report = scanner.scan_directory(
+                    skills_dir,
+                    recursive=args.recursive,
+                    check_overlap=check_overlap,
+                    lenient=lenient,
+                    skill_file=skill_file,
+                    progress_callback=_on_skill,
+                )
+        else:
+            report = scanner.scan_directory(
+                skills_dir,
+                recursive=args.recursive,
+                check_overlap=check_overlap,
+                lenient=lenient,
+                skill_file=skill_file,
+            )
 
         if report.total_skills_scanned == 0:
             print("No skills found to scan.", file=sys.stderr)

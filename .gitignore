@@ -54,6 +54,8 @@ coverage.xml
 *.cover
 *.py,cover
 .hypothesis/
+./tests/test_data/
+
 
 # MyPy
 .mypy_cache/

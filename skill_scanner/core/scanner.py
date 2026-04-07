@@ -26,7 +26,7 @@ import logging
 import re
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .analyzability import AnalyzabilityReport, compute_analyzability
 from .analyzer_factory import build_core_analyzers
@@ -678,6 +678,7 @@ class SkillScanner:
         *,
         lenient: bool = False,
         skill_file: str | None = None,
+        progress_callback: Callable[..., None] | None = None,
     ) -> Report:
         """
         Scan all skill packages in a directory.
@@ -710,7 +711,11 @@ class SkillScanner:
         # Keep track of loaded skills for cross-skill analysis
         loaded_skills: list[Skill] = []
 
-        for skill_dir in skill_dirs:
+        total = len(skill_dirs)
+
+        for idx, skill_dir in enumerate(skill_dirs, start=1):
+            if progress_callback is not None:
+                progress_callback(skill_dir.name, idx, total)
             try:
                 skill = self.loader.load_skill(skill_dir, lenient=lenient, skill_file=skill_file)
                 result = self._scan_single_skill(skill, skill_dir)
