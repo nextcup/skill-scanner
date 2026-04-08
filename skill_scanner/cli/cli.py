@@ -33,6 +33,7 @@ from rich.markdown import Markdown
 from .. import __version__
 from ..core.analyzer_factory import build_analyzers
 from ..core.loader import SkillLoadError
+from ..core.reporters.csv_reporter import CSVReporter
 from ..core.reporters.html_reporter import HTMLReporter
 from ..core.reporters.json_reporter import JSONReporter
 from ..core.reporters.markdown_reporter import MarkdownReporter
@@ -199,7 +200,7 @@ def _build_meta_analyzer(
 def _make_status_printer(args: argparse.Namespace) -> Callable[[str], None]:
     """Return a printer that sends to stderr when JSON output is active."""
     formats = _get_formats(args)
-    is_machine = any(f in formats for f in ("json", "sarif"))
+    is_machine = any(f in formats for f in ("json", "sarif", "csv"))
 
     def _print(msg: str) -> None:
         print(msg, file=sys.stderr if is_machine else sys.stdout)
@@ -229,6 +230,8 @@ def _format_single(fmt: str, args: argparse.Namespace, result_or_report) -> str:
         return SARIFReporter().generate_report(result_or_report)
     if fmt == "html":
         return HTMLReporter().generate_report(result_or_report)
+    if fmt == "csv":
+        return CSVReporter().generate_report(result_or_report)
     # summary (default)
     from ..core.models import Report
 
@@ -731,7 +734,7 @@ def _generate_multi_skill_summary(report) -> str:
 # ---------------------------------------------------------------------------
 
 
-_VALID_FORMATS = ("summary", "json", "markdown", "table", "sarif", "html")
+_VALID_FORMATS = ("summary", "json", "markdown", "table", "sarif", "html", "csv")
 
 
 def _add_common_scan_flags(parser: argparse.ArgumentParser) -> None:
@@ -756,6 +759,7 @@ def _add_common_scan_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--output-markdown", help="Write Markdown report to this file")
     parser.add_argument("--output-html", help="Write HTML report to this file")
     parser.add_argument("--output-table", help="Write Table report to this file")
+    parser.add_argument("--output-csv", help="Write CSV report to this file")
     parser.add_argument("--detailed", action="store_true", help="Include detailed findings (Markdown output only)")
     parser.add_argument(
         "--no-render-markdown",
