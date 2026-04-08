@@ -32,11 +32,11 @@
           },
           "title": {
             "type": "string",
-            "description": "Brief title describing the security finding"
+            "description": "Brief title describing the security finding in Simplified Chinese"
           },
           "description": {
             "type": "string",
-            "description": "Detailed description of the security threat"
+            "description": "Detailed description of the security threat in Simplified Chinese"
           },
           "location": {
             "type": ["string", "null"],
@@ -57,7 +57,7 @@
     },
     "overall_assessment": {
       "type": "string",
-      "description": "Summary assessment of the skill's security posture"
+      "description": "Summary assessment of the skill's security posture and output in Simplified Chinese"
     },
     "primary_threats": {
       "type": "array",

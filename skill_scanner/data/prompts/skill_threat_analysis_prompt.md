@@ -179,9 +179,9 @@ But script reads environment variables and makes network calls!
 The response must include:
 
 - **findings**: Array of security findings (empty array if no threats found)
-  - Each finding requires: severity, aitech (AITech code), title, description
-  - Optional fields: aisubtech (AISubtech code), location, evidence, remediation
-- **overall_assessment**: Summary of the security analysis
+  - Each finding requires: severity, aitech (AITech code), title, description(输出简体中文)
+  - Optional fields: aisubtech (AISubtech code), location, evidence(输出简体中文), remediation
+- **overall_assessment**: Summary of the security analysis in Simplified Chinese (简体中文)
 - **primary_threats**: Array of threat types identified (empty if safe)
 
 **Severity Levels:**

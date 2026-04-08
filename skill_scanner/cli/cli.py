@@ -491,13 +491,13 @@ def scan_all_command(args: argparse.Namespace) -> int:
                 TimeRemainingColumn(),
                 console=Console(file=sys.stderr),
             ) as progress:
-                scan_task = progress.add_task("Scanning skills...", total=100)
+                scan_task = progress.add_task("Scanning skills...", total=None)
 
                 def _on_skill(name: str, current: int, total: int) -> None:
                     progress.update(
                         scan_task,
-                        completed=int(current / total * 100) if total else 0,
-                        total=100,
+                        total=total,
+                        completed=current,
                         description=f"[{current}/{total}] Scanning [bold]{name}[/bold]",
                     )
 
@@ -509,6 +509,58 @@ def scan_all_command(args: argparse.Namespace) -> int:
                     skill_file=skill_file,
                     progress_callback=_on_skill,
                 )
+
+                if report.total_skills_scanned == 0:
+                    print("No skills found to scan.", file=sys.stderr)
+                    return 1
+
+                # Per-skill meta-analysis with progress
+                if meta_analyzer and apply_meta_analysis_to_results is not None:
+                    results_with_findings = [r for r in report.scan_results if r.findings]
+                    total_original, total_fp, total_new = 0, 0, 0
+                    if results_with_findings:
+                        meta_task = progress.add_task("Meta-analysis...", total=len(results_with_findings))
+                        for idx, result in enumerate(results_with_findings, start=1):
+                            progress.update(
+                                meta_task,
+                                completed=idx - 1,
+                                description=f"[{idx}/{len(results_with_findings)}] Meta-analyzing [bold]{result.skill_name}[/bold]",
+                            )
+                            try:
+                                skill = scanner.loader.load_skill(Path(result.skill_directory), lenient=lenient)
+                                original_count = len(result.findings)
+                                meta_result = asyncio.run(
+                                    meta_analyzer.analyze_with_findings(
+                                        skill=skill, findings=result.findings, analyzers_used=result.analyzers_used
+                                    )
+                                )
+                                filtered = apply_meta_analysis_to_results(
+                                    original_findings=result.findings, meta_result=meta_result, skill=skill
+                                )
+                                total_original += original_count
+                                total_fp += len(meta_result.false_positives)
+                                total_new += len(meta_result.missed_threats)
+                                result.findings = filtered
+                                result.analyzers_used.append("meta_analyzer")
+
+                                # Surface meta-analysis insights
+                                if result.scan_metadata is None:
+                                    result.scan_metadata = {}
+                                if meta_result.correlations:
+                                    result.scan_metadata["meta_correlations"] = meta_result.correlations
+                                if meta_result.recommendations:
+                                    result.scan_metadata["meta_recommendations"] = meta_result.recommendations
+                                if meta_result.overall_risk_assessment:
+                                    result.scan_metadata["meta_risk_assessment"] = meta_result.overall_risk_assessment
+                            except Exception as e:
+                                logger.warning("Meta-analysis failed for %s: %s", result.skill_name, e)
+                            progress.update(meta_task, completed=idx)
+
+                    retained = total_original - total_fp
+                    parts = [f"{total_fp} false positives removed", f"{retained} findings retained"]
+                    if total_new:
+                        parts.append(f"{total_new} new threats detected")
+                    progress.console.print(f"Meta-analysis complete: {', '.join(parts)}")
         else:
             report = scanner.scan_directory(
                 skills_dir,
@@ -518,53 +570,53 @@ def scan_all_command(args: argparse.Namespace) -> int:
                 skill_file=skill_file,
             )
 
-        if report.total_skills_scanned == 0:
-            print("No skills found to scan.", file=sys.stderr)
-            return 1
+            if report.total_skills_scanned == 0:
+                print("No skills found to scan.", file=sys.stderr)
+                return 1
 
-        # Per-skill meta-analysis
-        if meta_analyzer and apply_meta_analysis_to_results is not None:
-            status("Running meta-analysis on scan results...")
-            total_original, total_fp, total_new = 0, 0, 0
-            for result in report.scan_results:
-                if not result.findings:
-                    continue
-                try:
-                    skill = scanner.loader.load_skill(
-                        Path(result.skill_directory), lenient=lenient, skill_file=skill_file
-                    )
-                    original_count = len(result.findings)
-                    meta_result = asyncio.run(
-                        meta_analyzer.analyze_with_findings(
-                            skill=skill, findings=result.findings, analyzers_used=result.analyzers_used
+            # Per-skill meta-analysis (no progress bar in pipe mode)
+            if meta_analyzer and apply_meta_analysis_to_results is not None:
+                status("Running meta-analysis on scan results...")
+                total_original, total_fp, total_new = 0, 0, 0
+                for result in report.scan_results:
+                    if not result.findings:
+                        continue
+                    try:
+                        skill = scanner.loader.load_skill(
+                            Path(result.skill_directory), lenient=lenient, skill_file=skill_file
                         )
-                    )
-                    filtered = apply_meta_analysis_to_results(
-                        original_findings=result.findings, meta_result=meta_result, skill=skill
-                    )
-                    total_original += original_count
-                    total_fp += len(meta_result.false_positives)
-                    total_new += len(meta_result.missed_threats)
-                    result.findings = filtered
-                    result.analyzers_used.append("meta_analyzer")
+                        original_count = len(result.findings)
+                        meta_result = asyncio.run(
+                            meta_analyzer.analyze_with_findings(
+                                skill=skill, findings=result.findings, analyzers_used=result.analyzers_used
+                            )
+                        )
+                        filtered = apply_meta_analysis_to_results(
+                            original_findings=result.findings, meta_result=meta_result, skill=skill
+                        )
+                        total_original += original_count
+                        total_fp += len(meta_result.false_positives)
+                        total_new += len(meta_result.missed_threats)
+                        result.findings = filtered
+                        result.analyzers_used.append("meta_analyzer")
 
-                    # Surface meta-analysis insights
-                    if result.scan_metadata is None:
-                        result.scan_metadata = {}
-                    if meta_result.correlations:
-                        result.scan_metadata["meta_correlations"] = meta_result.correlations
-                    if meta_result.recommendations:
-                        result.scan_metadata["meta_recommendations"] = meta_result.recommendations
-                    if meta_result.overall_risk_assessment:
-                        result.scan_metadata["meta_risk_assessment"] = meta_result.overall_risk_assessment
-                except Exception as e:
-                    logger.warning("Meta-analysis failed for %s: %s", result.skill_name, e)
+                        # Surface meta-analysis insights
+                        if result.scan_metadata is None:
+                            result.scan_metadata = {}
+                        if meta_result.correlations:
+                            result.scan_metadata["meta_correlations"] = meta_result.correlations
+                        if meta_result.recommendations:
+                            result.scan_metadata["meta_recommendations"] = meta_result.recommendations
+                        if meta_result.overall_risk_assessment:
+                            result.scan_metadata["meta_risk_assessment"] = meta_result.overall_risk_assessment
+                    except Exception as e:
+                        logger.warning("Meta-analysis failed for %s: %s", result.skill_name, e)
 
-            retained = total_original - total_fp
-            parts = [f"{total_fp} false positives removed", f"{retained} findings retained"]
-            if total_new:
-                parts.append(f"{total_new} new threats detected")
-            status(f"Meta-analysis complete: {', '.join(parts)}")
+                retained = total_original - total_fp
+                parts = [f"{total_fp} false positives removed", f"{retained} findings retained"]
+                if total_new:
+                    parts.append(f"{total_new} new threats detected")
+                status(f"Meta-analysis complete: {', '.join(parts)}")
 
         # Strip false positives from output unless --verbose
         if not getattr(args, "verbose", False):

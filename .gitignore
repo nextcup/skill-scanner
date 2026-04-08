@@ -54,7 +54,8 @@ coverage.xml
 *.cover
 *.py,cover
 .hypothesis/
-./tests/test_data/
+tests/test_data/
+scan_results*.csv
 
 
 # MyPy
@@ -107,6 +108,7 @@ evals/results/
 # UI test/verification scripts (local-only, require Playwright)
 scripts/ui_screenshot.py
 scripts/ui_security_verify.py
+
 
 # User-generated scan policy (default TUI output)
 scan_policy.yaml
