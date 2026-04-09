@@ -343,6 +343,41 @@ def _write_output(args: argparse.Namespace, output: str) -> None:
 # Commands
 # ---------------------------------------------------------------------------
 
+def _is_url(path: str) -> bool:
+    """Check if path is an HTTP/HTTPS URL."""
+    return path.startswith(("http://", "https://"))
+
+
+def _is_zip(path: str) -> bool:
+    """Check if path is a local ZIP file."""
+    return Path(path).suffix.lower() == ".zip"
+
+
+def _resolve_skill_input(path: str) -> tuple[Path, Path | None]:
+    """
+    Resolve skill input path.
+
+    Args:
+        path: Input path (directory, ZIP file, or URL)
+
+    Returns:
+        Tuple of (resolved_path, temp_dir_to_cleanup).
+        temp_dir_to_cleanup is the path that should be cleaned up after scan,
+        or None if input was already a local directory.
+    """
+    from ..core.zip_downloader import ZipDownloader
+
+    downloader = ZipDownloader()
+
+    if _is_url(path):
+        temp_dir = downloader.download_and_extract(path)
+        return temp_dir, temp_dir
+    elif _is_zip(path):
+        temp_dir = downloader.extract_zip(Path(path))
+        return temp_dir, temp_dir
+    else:
+        return Path(path), None
+
 
 def _handle_rule_packs_list(args: argparse.Namespace) -> bool:
     """If ``--rule-packs list`` was passed, print available packs and return True."""
