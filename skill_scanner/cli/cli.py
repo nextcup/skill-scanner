@@ -500,7 +500,12 @@ def scan_all_command(args: argparse.Namespace) -> int:
     if _handle_rule_packs_list(args):
         return 0
 
-    skills_dir = Path(args.skills_directory)
+    try:
+        skills_dir, temp_dir = _resolve_skill_input(args.skills_directory)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
     if not skills_dir.exists():
         print(f"Error: Directory does not exist: {skills_dir}", file=sys.stderr)
         return 1
@@ -692,6 +697,9 @@ def scan_all_command(args: argparse.Namespace) -> int:
         print(f"Unexpected error: {e}", file=sys.stderr)
         traceback.print_exc(file=sys.stderr)
         return 1
+    finally:
+        if temp_dir and temp_dir.exists():
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 def list_analyzers_command(_args: argparse.Namespace) -> int:
