@@ -22,6 +22,7 @@ import argparse
 import asyncio
 import logging
 import os
+import shutil
 import sys
 import traceback
 from collections.abc import Callable
@@ -401,7 +402,12 @@ def scan_command(args: argparse.Namespace) -> int:
     if _handle_rule_packs_list(args):
         return 0
 
-    skill_dir = Path(args.skill_directory)
+    try:
+        skill_dir, temp_dir = _resolve_skill_input(args.skill_directory)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
     if not skill_dir.exists():
         print(f"Error: Directory does not exist: {skill_dir}", file=sys.stderr)
         return 1
@@ -484,6 +490,9 @@ def scan_command(args: argparse.Namespace) -> int:
         print(f"Unexpected error: {e}", file=sys.stderr)
         traceback.print_exc(file=sys.stderr)
         return 1
+    finally:
+        if temp_dir and temp_dir.exists():
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 def scan_all_command(args: argparse.Namespace) -> int:
