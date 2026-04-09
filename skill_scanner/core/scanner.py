@@ -25,8 +25,9 @@ import json
 import logging
 import re
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from .analyzability import AnalyzabilityReport, compute_analyzability
 from .analyzer_factory import build_core_analyzers
@@ -896,6 +897,14 @@ class SkillScanner:
                     seen.add(resolved)
                     skill_dirs.append(md.parent)
         else:
+            # Check directory itself first
+            md = directory / target_filename
+            if md.exists():
+                resolved = directory.resolve()
+                if resolved not in seen:
+                    seen.add(resolved)
+                    skill_dirs.append(directory)
+            # Then check subdirectories
             for item in directory.iterdir():
                 if item.is_dir():
                     md = item / target_filename
@@ -920,10 +929,50 @@ class SkillScanner:
                         if resolved in seen:
                             continue
                         if any(item.glob("*.md")):
+                            # Skip if any ancestor is already a skill
+                            if any(_is_ancestor(existing, resolved) for existing in skill_dirs):
+                                continue
                             seen.add(resolved)
                             skill_dirs.append(item)
 
+        # Phase 3 (recursive only): exclude directories whose ancestor is already a skill
+        # to avoid discovering nested skill-like directories (e.g., assets/, references/)
+        # that happen to contain .md files but are actually part of a parent skill.
+        if recursive and skill_dirs:
+            skill_dirs = self._filter_nested_skills(skill_dirs)
+
         return skill_dirs
+
+    @staticmethod
+    def _filter_nested_skills(skill_dirs: list[Path]) -> list[Path]:
+        """
+        Filter out directories whose ancestor is already in the list.
+
+        When a parent directory is a skill (has SKILL.md), any of its child
+        directories that contain .md files should not be treated as separate
+        skills. For example, given this structure:
+            self-improving-agent/     (has SKILL.md)
+              assets/               (has .md files but is not a separate skill)
+              references/           (has .md files but is not a separate skill)
+        Only self-improving-agent/ should be returned.
+        """
+        if not skill_dirs:
+            return skill_dirs
+
+        # Sort by depth (shallowest first) so ancestors are processed before descendants
+        sorted_dirs = sorted(skill_dirs, key=lambda p: len(p.parts))
+        filtered: list[Path] = []
+
+        for candidate in sorted_dirs:
+            # Check if any ancestor of candidate is already in filtered
+            is_nested = any(
+                candidate != existing and _is_ancestor(existing, candidate)
+                for existing in filtered
+            )
+            if not is_nested:
+                filtered.append(candidate)
+
+        return filtered
 
     def add_analyzer(self, analyzer: BaseAnalyzer):
         """Add an analyzer to the scanner."""
@@ -932,6 +981,15 @@ class SkillScanner:
     def list_analyzers(self) -> list[str]:
         """Get names of all configured analyzers."""
         return [analyzer.get_name() for analyzer in self.analyzers]
+
+
+def _is_ancestor(parent: Path, child: Path) -> bool:
+    """Check if *parent* is an ancestor of *child* (parent is a directory above child)."""
+    try:
+        child.relative_to(parent)
+        return True
+    except ValueError:
+        return False
 
 
 def scan_skill(
