@@ -26,7 +26,6 @@ import tempfile
 import urllib.request
 import zipfile
 from pathlib import Path
-from typing import Any
 
 from .exceptions import SkillLoadError
 
@@ -84,12 +83,27 @@ class ZipDownloader:
                     if not zipfile.is_zipfile(zip_path):
                         raise SkillLoadError(f"Downloaded file is not a valid ZIP: {url}")
 
-                    # Extract with basic path traversal protection
+                    # Extract with Zip Slip protection
                     for member in zf.namelist():
                         member_path = Path(member)
-                        # Reject paths with traversal sequences
-                        if member_path.parts and any(p == '..' for p in member_path.parts):
+                        # Skip absolute paths to prevent Zip Slip
+                        if member_path.is_absolute():
+                            logger.warning(f"Skipping absolute path: {member}")
+                            continue
+                        # Skip paths with traversal sequences
+                        if '..' in member_path.parts:
                             logger.warning(f"Skipping path traversal attempt: {member}")
+                            continue
+                        target = Path(temp_dir) / member_path
+                        # Ensure target resolves within temp_dir
+                        try:
+                            target_resolved = target.resolve()
+                            temp_resolved = Path(temp_dir).resolve()
+                            if not target_resolved.is_relative_to(temp_resolved):
+                                logger.warning(f"Skipping unsafe path: {member}")
+                                continue
+                        except (OSError, ValueError):
+                            logger.warning(f"Skipping unresolvable path: {member}")
                             continue
                         zf.extract(member, temp_dir)
 
@@ -127,11 +141,27 @@ class ZipDownloader:
         temp_dir = tempfile.mkdtemp()
         try:
             with zipfile.ZipFile(zip_path, 'r') as zf:
-                # Security check: path traversal protection
+                # Zip Slip protection
                 for member in zf.namelist():
                     member_path = Path(member)
-                    if member_path.parts and any(p == '..' for p in member_path.parts):
+                    # Skip absolute paths to prevent Zip Slip
+                    if member_path.is_absolute():
+                        logger.warning(f"Skipping absolute path: {member}")
+                        continue
+                    # Skip paths with traversal sequences
+                    if '..' in member_path.parts:
                         logger.warning(f"Skipping path traversal attempt: {member}")
+                        continue
+                    target = Path(temp_dir) / member_path
+                    # Ensure target resolves within temp_dir
+                    try:
+                        target_resolved = target.resolve()
+                        temp_resolved = Path(temp_dir).resolve()
+                        if not target_resolved.is_relative_to(temp_resolved):
+                            logger.warning(f"Skipping unsafe path: {member}")
+                            continue
+                    except (OSError, ValueError):
+                        logger.warning(f"Skipping unresolvable path: {member}")
                         continue
                     zf.extract(member, temp_dir)
 

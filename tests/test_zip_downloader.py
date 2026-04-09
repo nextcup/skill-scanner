@@ -134,3 +134,18 @@ class TestZipDownloader:
         downloader = ZipDownloader()
         # 不应抛出异常
         downloader.cleanup("/path/that/does/not/exist")
+
+    def test_extract_zip_empty_file(self, tmp_path):
+        """解压空 ZIP 文件应返回空目录"""
+        # 创建空 ZIP 文件
+        zip_path = tmp_path / "empty.zip"
+        with zipfile.ZipFile(zip_path, 'w') as zf:
+            pass  # 空 ZIP，无任何内容
+
+        downloader = ZipDownloader()
+        result = downloader.extract_zip(zip_path)
+
+        assert result.exists()
+        assert result.is_dir()
+        # 空 ZIP 应创建空目录
+        assert list(result.iterdir()) == []
