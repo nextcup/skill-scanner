@@ -185,7 +185,7 @@ Respond with **ONLY** a valid JSON object. Output `correlations` and `overall_ri
     "summary": "One-sentence assessment",
     "top_priority": "The single most important thing to fix",
     "skill_verdict": "SAFE|SUSPICIOUS|MALICIOUS",
-    "verdict_reasoning": "Why this verdict"
+    "verdict_reasoning": "Why this verdict(使用简体中文输出)"
   },
   "correlations": [
     {

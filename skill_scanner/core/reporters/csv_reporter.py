@@ -22,6 +22,7 @@ Produces one row per skill with summary-level fields.
 
 import csv
 import io
+import json
 
 from ..models import Report, ScanResult
 
@@ -35,6 +36,10 @@ FIELDS = (
     "analyzers_used",
     "llm_overall_assessment",
     "timestamp",
+    "risk_level",
+    "skill_verdict",
+    "verdict_reasoning",
+    "full_json",
 )
 
 
@@ -43,6 +48,8 @@ def _row_from_result(d: dict) -> dict:
     analyzers = d.get("analyzers_used", [])
     if isinstance(analyzers, list):
         analyzers = ";".join(analyzers)
+    scan_metadata = d.get("scan_metadata") or {}
+    meta_ra = scan_metadata.get("meta_risk_assessment") or {}
     return {
         "skill_name": d.get("skill_name", ""),
         "skill_path": d.get("skill_path", ""),
@@ -51,8 +58,12 @@ def _row_from_result(d: dict) -> dict:
         "findings_count": d.get("findings_count", 0),
         "scan_duration_seconds": d.get("scan_duration_seconds", 0.0),
         "analyzers_used": analyzers,
-        "llm_overall_assessment": (d.get("scan_metadata") or {}).get("llm_overall_assessment", ""),
+        "llm_overall_assessment": scan_metadata.get("llm_overall_assessment", ""),
         "timestamp": d.get("timestamp", ""),
+        "risk_level": meta_ra.get("risk_level", ""),
+        "skill_verdict": meta_ra.get("skill_verdict", ""),
+        "verdict_reasoning": meta_ra.get("verdict_reasoning", ""),
+        "full_json": json.dumps(d, ensure_ascii=False, indent=2, sort_keys=True, default=str),
     }
 
 

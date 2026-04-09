@@ -55,6 +55,7 @@ coverage.xml
 *.py,cover
 .hypothesis/
 tests/test_data/
+tests/all_test_data/
 scan_results*.csv
 
 
