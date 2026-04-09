@@ -21,12 +21,12 @@ import tempfile
 import urllib.error
 import zipfile
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from skill_scanner.core.zip_downloader import ZipDownloader
 from skill_scanner.core.exceptions import SkillLoadError
+from skill_scanner.core.zip_downloader import ZipDownloader
 
 
 class TestZipDownloader:
@@ -95,7 +95,7 @@ class TestZipDownloader:
             mock_response.read.return_value = zip_buffer.getvalue()
             mock_urlopen.return_value.__enter__.return_value = mock_response
 
-            result = downloader.download_and_extract("https://example.com/test.zip")
+            result = downloader.download_and_extract("https://wry-manatee-359.convex.site/api/v1/download?slug=self-improving-agent")
 
         assert result.exists()
         assert result.is_dir()
