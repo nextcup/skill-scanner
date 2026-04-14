@@ -228,9 +228,6 @@ def scan_skill(skill_dir: Path, config: dict) -> dict:
             except Exception:
                 pass  # meta failure should not block the commit hook
 
-        scanner = SkillScanner(analyzers=analyzers, policy=policy)
-        result = scanner.scan_skill(skill_dir, lenient=bool(config.get("lenient")))
-
         # Count findings by severity
         counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
         for f in result.findings:

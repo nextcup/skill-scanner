@@ -152,6 +152,19 @@ class Config:
         return cls.from_env()
 
 
+def _find_env_file(start: Path, filename: str = ".env", max_depth: int = 5) -> Path | None:
+    """从 *start* 目录向上递归查找 *filename*。"""
+    current = start.resolve()
+    for _ in range(max_depth):
+        candidate = current / filename
+        if candidate.exists():
+            return candidate
+        if current.parent == current:
+            break
+        current = current.parent
+    return None
+
+
 def load_dotenv(env_path: Path | None = None) -> None:
     """Load environment variables from a ``.env`` file.
 
@@ -159,13 +172,16 @@ def load_dotenv(env_path: Path | None = None) -> None:
     set when the variable is not already present (``os.environ.setdefault``).
 
     Args:
-        env_path: Explicit path to the ``.env`` file.  Defaults to
-            ``.env`` in the current working directory.
+        env_path: Explicit path to the ``.env`` file.  When *None*, the
+            function searches upward from ``config.py``'s parent directory.
     """
-    path = env_path or Path(".env")
-    if not path.exists():
+    if env_path is None:
+        # 以 config.py 所在目录为锚点向上查找，避免依赖 cwd
+        env_path = _find_env_file(Path(__file__).resolve().parent)
+
+    if env_path is None or not env_path.exists():
         return
-    with open(path, encoding="utf-8") as f:
+    with open(env_path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith("#") or "=" not in line:
