@@ -60,6 +60,8 @@ DEFAULT_CONFIG = {
     "fail_fast": True,
     "use_behavioral": False,
     "use_trigger": True,
+    "use_llm": False,
+    "enable_meta": False,
 }
 
 # Severity levels (higher number = more severe)
@@ -197,7 +199,34 @@ def scan_skill(skill_dir: Path, config: dict) -> dict:
             policy,
             use_behavioral=bool(config.get("use_behavioral")),
             use_trigger=bool(config.get("use_trigger")),
+            use_llm=bool(config.get("use_llm")),
+            llm_provider=config.get("llm_provider"),
+            llm_consensus_runs=int(config.get("llm_consensus_runs", 1)),
         )
+
+        scanner = SkillScanner(analyzers=analyzers, policy=policy)
+        result = scanner.scan_skill(skill_dir, lenient=bool(config.get("lenient")))
+
+        # Meta-analysis (post-processing, NOT part of the analyzer list)
+        if config.get("enable_meta") and len(analyzers) >= 2 and result.findings:
+            try:
+                import asyncio
+
+                from ..core.analyzers.meta_analyzer import MetaAnalyzer, apply_meta_analysis_to_results
+
+                meta = MetaAnalyzer(policy=policy)
+                skill = scanner.loader.load_skill(skill_dir, lenient=bool(config.get("lenient")))
+                meta_result = asyncio.run(
+                    meta.analyze_with_findings(
+                        skill=skill, findings=result.findings, analyzers_used=result.analyzers_used
+                    )
+                )
+                result.findings = apply_meta_analysis_to_results(
+                    original_findings=result.findings, meta_result=meta_result, skill=skill
+                )
+                result.analyzers_used.append("meta_analyzer")
+            except Exception:
+                pass  # meta failure should not block the commit hook
 
         scanner = SkillScanner(analyzers=analyzers, policy=policy)
         result = scanner.scan_skill(skill_dir, lenient=bool(config.get("lenient")))
@@ -216,10 +245,14 @@ def scan_skill(skill_dir: Path, config: dict) -> dict:
                 {
                     "rule_id": f.rule_id,
                     "severity": f.severity.value if hasattr(f.severity, "value") else str(f.severity),
+                    "category": f.category.value if hasattr(f.category, "value") else str(f.category),
                     "title": f.title,
                     "description": f.description,
-                    "file_path": f.file_path,
+                    "file_path": str((skill_dir / f.file_path).resolve()) if f.file_path else None,
                     "line_number": f.line_number,
+                    "snippet": f.snippet,
+                    "remediation": f.remediation,
+                    "analyzer": f.analyzer,
                 }
                 for f in result.findings
             ],
@@ -263,12 +296,41 @@ def format_finding(finding: dict) -> str:
     """Format a finding for console output."""
     severity = finding["severity"].upper()
     title = finding["title"]
-    location = finding.get("file_path", "")
 
+    location = finding.get("file_path") or "<unknown>"
     if finding.get("line_number"):
         location = f"{location}:{finding['line_number']}"
 
-    return f"  [{severity}] {title}\n    Location: {location}"
+    analyzer = finding.get("analyzer")
+    analyzer_tag = f"  ({analyzer})" if analyzer else ""
+
+    lines = [f"  [{severity}{analyzer_tag}] {title}"]
+    lines.append(f"    File:     {location}")
+    lines.append(f"    Rule:     {finding.get('rule_id', 'N/A')}")
+
+    description = finding.get("description")
+    if description:
+        # Truncate long descriptions
+        desc = description.replace("\n", " ").strip()
+        if len(desc) > 200:
+            desc = desc[:197] + "..."
+        lines.append(f"    Detail:   {desc}")
+
+    snippet = finding.get("snippet")
+    if snippet:
+        snippet_text = snippet.replace("\n", " ").strip()
+        if len(snippet_text) > 150:
+            snippet_text = snippet_text[:147] + "..."
+        lines.append(f"    Snippet:  {snippet_text}")
+
+    remediation = finding.get("remediation")
+    if remediation:
+        rem = remediation.replace("\n", " ").strip()
+        if len(rem) > 200:
+            rem = rem[:197] + "..."
+        lines.append(f"    Fix:      {rem}")
+
+    return "\n".join(lines)
 
 
 def main(args: list[str] | None = None) -> int:
@@ -302,6 +364,14 @@ def main(args: list[str] | None = None) -> int:
         action="store_true",
         help="Tolerate malformed skills instead of failing",
     )
+    parser.add_argument("--use-llm", action="store_true", help="Enable LLM-based semantic analysis")
+    parser.add_argument("--llm-provider", choices=["anthropic", "openai"], help="LLM provider")
+    parser.add_argument(
+        "--llm-consensus-runs", type=int, metavar="N", help="LLM consensus runs (default: 1)"
+    )
+    parser.add_argument("--enable-meta", action="store_true", help="Enable meta-analysis FP filtering")
+    parser.add_argument("--policy", metavar="PRESET_OR_PATH", help="Scan policy preset or YAML path")
+    parser.add_argument("--custom-rules", metavar="PATH", help="Path to custom YARA rules directory")
     parser.add_argument(
         "install",
         nargs="?",
@@ -337,6 +407,18 @@ def main(args: list[str] | None = None) -> int:
         config["skills_path"] = parsed_args.skills_path
     if parsed_args.lenient:
         config["lenient"] = True
+    if parsed_args.use_llm:
+        config["use_llm"] = True
+    if parsed_args.enable_meta:
+        config["enable_meta"] = True
+    if parsed_args.llm_provider:
+        config["llm_provider"] = parsed_args.llm_provider
+    if parsed_args.llm_consensus_runs:
+        config["llm_consensus_runs"] = parsed_args.llm_consensus_runs
+    if parsed_args.policy:
+        config["policy"] = parsed_args.policy
+    if parsed_args.custom_rules:
+        config["custom_rules"] = parsed_args.custom_rules
 
     # Get staged files and affected skills
     if parsed_args.all:
@@ -381,9 +463,12 @@ def main(args: list[str] | None = None) -> int:
         else:
             print(f"  ⚠️  {len(findings)} finding(s) below threshold")
 
-        # Print findings
+        # Print only findings that meet or exceed threshold
+        threshold_level = SEVERITY_LEVELS.get(config["severity_threshold"].lower(), SEVERITY_LEVELS["high"])
         for finding in findings:
-            print(format_finding(finding))
+            finding_level = SEVERITY_LEVELS.get(finding["severity"].lower(), 0)
+            if finding_level >= threshold_level:
+                print(format_finding(finding))
             all_findings.append(finding)
 
         if blocked and config.get("fail_fast"):
