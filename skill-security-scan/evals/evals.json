@@ -1,0 +1,35 @@
+{
+  "skill_name": "skill-security-scan",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "帮我检查一下 D:\\skills\\my-agent-skill 这个skill是否安全",
+      "expected_output": "识别输入为本地目录路径，执行 scan-all 命令，展示安全扫描结果摘要，告知 CSV 文件位置",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "这个skill安全吗 https://github.com/user/skill/archive/main.zip 我想在claude code里用它",
+      "expected_output": "识别输入为 zip URL，执行 scan-all 命令，展示安全扫描结果摘要，给出是否建议使用的建议",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "我下载了一个skill叫agent-helper.zip在Downloads文件夹，帮我看看有没有安全问题",
+      "expected_output": "识别输入为本地 zip 文件路径（~/Downloads/agent-helper.zip），执行 scan-all 命令，展示结果",
+      "files": []
+    },
+    {
+      "id": 4,
+      "prompt": "我这里有三个skill想检查：./skill-a、./skill-b、./skill-c，能一起扫吗",
+      "expected_output": "告知每次只能扫描一个，询问用户先扫描哪个",
+      "files": []
+    },
+    {
+      "id": 5,
+      "prompt": "扫描一下 ./tests/test_data/malicious-skill 这个目录，看看有没有 prompt injection 之类的风险",
+      "expected_output": "识别为本地目录，执行扫描，如果发现 prompt injection 相关问题则重点提示 CRITICAL/HIGH 级别发现",
+      "files": []
+    }
+  ]
+}
