@@ -57,7 +57,7 @@ from ..config.config import load_dotenv
 DEFAULT_CONFIG = {
     "severity_threshold": "high",  # Block commits on HIGH or CRITICAL
     "skills_path": ".claude/skills",  # Default skills location
-    "fail_fast": True,
+    "fail_fast": False,
     "use_behavioral": False,
     "use_trigger": True,
     "use_llm": False,
@@ -97,9 +97,16 @@ def load_config(repo_root: Path) -> dict:
         if config_path.exists():
             try:
                 with open(config_path, encoding="utf-8") as f:
-                    user_config = json.load(f)
-                    config.update(user_config)
-                    break
+                    raw = f.read()
+                # Strip comments and normalise Python-style booleans
+                raw = "\n".join(
+                    line if "#" not in line else line[: line.index("#")]
+                    for line in raw.splitlines()
+                )
+                raw = raw.replace(": True", ": true").replace(": False", ": false")
+                user_config = json.loads(raw)
+                config.update(user_config)
+                break
             except (OSError, json.JSONDecodeError) as e:
                 print(f"Warning: Failed to load config from {config_path}: {e}", file=sys.stderr)
 
@@ -300,10 +307,8 @@ def format_finding(finding: dict) -> str:
 
     analyzer = finding.get("analyzer")
     analyzer_tag = f"  ({analyzer})" if analyzer else ""
-
-    lines = [f"  [{severity}{analyzer_tag}] {title}"]
-    lines.append(f"    File:     {location}")
-    lines.append(f"    Rule:     {finding.get('rule_id', 'N/A')}")
+    lines = [f"  [{severity}{analyzer_tag}] {title}", f"    File:     {location}",
+             f"    Rule:     {finding.get('rule_id', 'N/A')}"]
 
     description = finding.get("description")
     if description:
@@ -539,7 +544,7 @@ exit $exit_code
     print(f"✅ Pre-commit hook installed at {hook_path}")
     print("\nConfiguration:")
     print("  Create .skill_scannerrc in your repo root to customize behavior:")
-    print('  { "severity_threshold": "high", "skills_path": ".claude/skills" }')
+    print(DEFAULT_CONFIG)
 
     return 0
 
