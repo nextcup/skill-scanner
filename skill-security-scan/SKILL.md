@@ -23,14 +23,6 @@ SKILL_DIR="$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "$0"
 # SKILL_DIR=%USERPROFILE%\.claude\skills\skill-security-scan\scripts
 ```
 
-### 确保 uv 已安装
-
-```shell
-uv -V
-```
-
-若不报错说明 uv 已正确安装。如找不到uv，则需要安装uv。
-
 ## 文件扫描命令
 
 所有命令使用 `uv --directory <SCRIPTS_DIR>` 指定工作目录，无需手动 cd。
@@ -88,7 +80,7 @@ uv --directory "$SKILL_DIR" run --index-url https://pypi.tuna.tsinghua.edu.cn/si
 
 ### 2. 执行扫描
 
-将用户提供的输入代入命令并执行。由于 LLM 分析可能需要较长时间，设置较长的超时时间（最多 10000 分钟）。
+将用户提供的输入代入命令并执行。由于 LLM 分析可能需要较长时间，设置较长的超时时间（最多 10000 分钟）。提前告知用户需要等待。
 
 如果命令执行失败：
 - 检查 `skill-scanner` 是否已安装——运行安装脚本重新安装
@@ -97,57 +89,22 @@ uv --directory "$SKILL_DIR" run --index-url https://pypi.tuna.tsinghua.edu.cn/si
 
 ### 3. 展示结果
 
-扫描完成后，若csv行数大于11，直接返回“完整结果已保存到: scan_result-<timestamp>.csv，请自行查看”，否则执行以下三步：
+扫描完成后，运行后处理脚本（一次命令完成计行数 + 提取 + 格式化输出）：
 
-**a) 读取 CSV 输出**
-
-读取 `scan_result-<timestamp>.csv` 获取结构化结果。关键列：
-
-| 列名 | 含义 |
-|------|------|
-| `skill_name` | 被扫描的 skill 名称 |
-| `is_safe` | `True` 表示未发现威胁 |
-| `max_severity` | 最高严重等级：CRITICAL > HIGH > MEDIUM > LOW > INFO |
-| `findings_count` | 发现问题总数 |
-| `risk_level` | Meta 分析风险等级（如可用）：CRITICAL > HIGH > MEDIUM > LOW > SAFE |
-| `skill_verdict` | Meta 分析结论（如可用）：MALICIOUS > SUSPICIOUS > SAFE |
-| `verdict_reasoning` | 得出该结论的理由 |
-| `llm_overall_assessment` | LLM 的整体评估 |
-
-**b) 在终端展示摘要**
-
-用中文呈现清晰的结论：
-
-* 若<risk_level><skill_verdict>可用
-
-  ```
-  === 安全扫描结果 ===
-  Skill: <skill_name>
-  结论: 当<skill_verdict>大于等于SUSPICIOUS且<risk_level>大于等于High为 不安全，否则为 安全
-  最高严重等级: <max_severity>
-  发现问题数: <findings_count>
-  风险等级: <risk_level>
-  评估说明: <llm_overall_assessment 或 verdict_reasoning>
-  ```
-
-* 若<risk_level><skill_verdict>不可用
-
-    ```
-    === 安全扫描结果 ===
-    Skill: <skill_name>
-    结论: 安全 / 不安全
-    最高严重等级: <max_severity>
-    发现问题数: <findings_count>
-    评估说明: <llm_overall_assessment>
-    ```
-
-如果存在问题，按严重等级分组列出（CRITICAL 在最前面），并用中文解释每个问题的含义。
-
-**c) 告知 CSV 文件位置**
-
+```bash
+uv --directory "$SKILL_DIR" run python parse_scan_result.py scan_result-<timestamp>.csv
 ```
-完整结果已保存到: scan_result-<timestamp>.csv
-```
+
+**脚本输出说明：**
+
+- 若输出以 `TOO_MANY_RECORDS` 开头（记录数 > 11），直接告知用户"完整结果已保存到: scan_result-<timestamp>.csv，请自行查看"
+- 否则脚本会输出格式化的中文摘要，直接将结果展示给用户
+
+**脚本输出的摘要包含：**
+
+- `=== 安全扫描结果 ===` 摘要块：skill 名称、文件位置、结论、最高严重等级、发现问题数、风险等级、评估说明
+- 按严重等级分组的发现列表（CRITICAL 在最前面）
+- CSV 文件位置
 
 ### 4. 解读发现
 

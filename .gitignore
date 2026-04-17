@@ -118,4 +118,4 @@ scripts/ui_security_verify.py
 scan_policy.yaml/
 
 # skill目录下重复的skill_scanner
-skill-security-scan/scripts/skill_scanner
+

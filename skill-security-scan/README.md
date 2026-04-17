@@ -26,8 +26,6 @@
 
 ## 安装
 
-
-
 `uv run python -m `运行时会自动安装 `skill-scanner` 及其依赖。
 
 (可选) 安装skill-scanner、skill-scanner-pre-commit、skill-scanner-api等命令行到~/.local/bin/
