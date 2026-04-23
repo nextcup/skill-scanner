@@ -106,6 +106,31 @@ def _load_policy(args: argparse.Namespace) -> ScanPolicy:
     return policy
 
 
+def _parse_csv(value: str | None) -> list[str] | None:
+    """Parse a comma-separated string into a list, or None."""
+    if not value:
+        return None
+    return [s.strip() for s in value.split(",") if s.strip()]
+
+
+def _build_threat_intel_config(args: argparse.Namespace) -> dict:
+    """Build threat intel config dict from CLI args."""
+    config: dict = {}
+    for attr, key in [
+        ("vt_api_key", "virustotal_api_key"),
+        ("threatbook_api_key", "threatbook_api_key"),
+        ("cuckoo_url", "cuckoo_url"),
+        ("cuckoo_api_key", "cuckoo_api_key"),
+        ("otx_api_key", "otx_api_key"),
+        ("zftip_url", "zftip_url"),
+        ("zftip_api_key", "zftip_api_key"),
+    ]:
+        val = getattr(args, attr, None)
+        if val:
+            config[key] = val
+    return config
+
+
 def _build_analyzers(policy: ScanPolicy, args: argparse.Namespace, status: Callable[[str], None]) -> list:
     """Build the full analyzer list from *policy* and CLI *args*.
 
@@ -136,6 +161,10 @@ def _build_analyzers(policy: ScanPolicy, args: argparse.Namespace, status: Calla
         llm_provider=getattr(args, "llm_provider", None),
         llm_consensus_runs=getattr(args, "llm_consensus_runs", 1),
         llm_max_tokens=getattr(args, "llm_max_tokens", None),
+        use_threat_intel=getattr(args, "use_threat_intel", False),
+        threat_intel_backends=_parse_csv(getattr(args, "threat_intel_backends", None)),
+        threat_intel_config=_build_threat_intel_config(args),
+        extract_iocs=getattr(args, "extract_iocs", True),
     )
 
     # Emit status messages for the optional analyzers that were activated.
@@ -148,6 +177,10 @@ def _build_analyzers(policy: ScanPolicy, args: argparse.Namespace, status: Calla
         elif name == "virustotal":
             mode = "with file uploads" if getattr(a, "upload_files", False) else "hash-only mode"
             status(f"Using VirusTotal binary file scanner ({mode})")
+        elif name == "threat_intel_analyzer":
+            backend_names = [b.name for b in getattr(a, "backends", [])]
+            ioc_status = "with IOC extraction" if getattr(a, "extract_iocs", False) else "hash-only"
+            status(f"Using threat intel analyzer ({ioc_status}): {', '.join(backend_names)}")
         elif name == "aidefense":
             status("Using AI Defense analyzer")
         elif name == "trigger":
@@ -922,6 +955,16 @@ def _add_common_scan_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--use-virustotal", action="store_true", help="Enable VirusTotal scanning (requires API key)")
     parser.add_argument("--vt-api-key", help="VirusTotal API key (or set VIRUSTOTAL_API_KEY)")
     parser.add_argument("--vt-upload-files", action="store_true", help="Upload unknown files to VirusTotal")
+    parser.add_argument("--use-threat-intel", action="store_true", help="Enable multi-source threat intelligence analysis")
+    parser.add_argument("--threat-intel-backends", help="Comma-separated backends: virustotal,threatbook,cuckoo,otx,zftip")
+    parser.add_argument("--extract-iocs", action="store_true", default=True, help="Extract IOCs from md/scripts and query (default: True)")
+    parser.add_argument("--no-extract-iocs", action="store_false", dest="extract_iocs", help="Disable IOC extraction")
+    parser.add_argument("--threatbook-api-key", help="ThreatBook API key (or set THREATBOOK_API_KEY)")
+    parser.add_argument("--cuckoo-url", help="Cuckoo Sandbox URL (or set CUCKOO_URL)")
+    parser.add_argument("--cuckoo-api-key", help="Cuckoo API token (or set CUCKOO_API_KEY)")
+    parser.add_argument("--otx-api-key", help="AlienVault OTX API key (or set OTX_API_KEY)")
+    parser.add_argument("--zftip-url", help="Zhongfu TI API URL (or set ZFTIP_URL)")
+    parser.add_argument("--zftip-api-key", help="Zhongfu TI API key (or set ZFTIP_API_KEY)")
     parser.add_argument("--use-aidefense", action="store_true", help="Enable AI Defense analyzer (requires API key)")
     parser.add_argument("--aidefense-api-key", help="AI Defense API key (or set AI_DEFENSE_API_KEY)")
     parser.add_argument("--aidefense-api-url", help="AI Defense API URL (optional, defaults to US region)")

@@ -248,6 +248,7 @@ class LLMAnalyzer(BaseAnalyzer):
         magic_mismatches: list[str] | None = None,
         static_findings_summary: list[str] | None = None,
         analyzability_score: float | None = None,
+        threat_intel_summaries: list[str] | None = None,
     ) -> None:
         """Set enriched context from other analyzers to improve LLM analysis.
 
@@ -259,6 +260,7 @@ class LLMAnalyzer(BaseAnalyzer):
             magic_mismatches: List of files with extension/content mismatches.
             static_findings_summary: Brief summary of key static analysis findings.
             analyzability_score: Overall analyzability score (0-100).
+            threat_intel_summaries: Detailed threat intel findings with IOC and source info.
         """
         parts: list[str] = []
 
@@ -270,6 +272,10 @@ class LLMAnalyzer(BaseAnalyzer):
             parts.append("Key static findings:")
             for f in static_findings_summary[:10]:  # Limit to top 10
                 parts.append(f"  - {f}")
+        if threat_intel_summaries:
+            parts.append("Threat intelligence findings (from multi-source IOC/hash lookups):")
+            for s in threat_intel_summaries[:10]:
+                parts.append(f"  - {s}")
         if analyzability_score is not None:
             parts.append(f"Analyzability score: {analyzability_score:.0f}%")
 

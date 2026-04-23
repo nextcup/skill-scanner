@@ -16,6 +16,10 @@
 """
 VirusTotal analyzer for scanning binary files using hash-based lookups.
 
+.. deprecated::
+    Use :class:`ThreatIntelAnalyzer` with :class:`VirusTotalBackend` instead.
+    This module is retained for backward compatibility.
+
 This analyzer checks binary files (images, PDFs, archives, etc.) against
 VirusTotal's database using SHA256 hash lookups. It does NOT scan code files
 like Python, JavaScript, or Markdown files.

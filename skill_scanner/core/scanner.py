@@ -254,6 +254,32 @@ class SkillScanner:
                             for f in all_findings
                             if f.severity in (Severity.CRITICAL, Severity.HIGH)
                         ][:10]
+
+                        # Build threat intel enrichment with multi-source details
+                        threat_intel_summaries: list[str] = []
+                        for f in all_findings:
+                            if f.analyzer == "threat_intel" and f.severity in (Severity.CRITICAL, Severity.HIGH, Severity.MEDIUM):
+                                meta = f.metadata or {}
+                                sources = meta.get("sources", {})
+                                if f.rule_id == "THREAT_INTEL_MALICIOUS_IOC":
+                                    ioc_type = meta.get("ioc_type", "unknown")
+                                    ioc_value = meta.get("ioc_value", "")
+                                    src_details = "; ".join(
+                                        f"{name}: {s.get('threat_level', '?')}"
+                                        for name, s in sources.items()
+                                    )
+                                    threat_intel_summaries.append(
+                                        f"Threat intel flagged {ioc_type} '{ioc_value}' ({src_details})"
+                                    )
+                                elif f.rule_id == "THREAT_INTEL_MALICIOUS_FILE":
+                                    file_hash = meta.get("file_hash", "")
+                                    src_details = "; ".join(
+                                        f"{name}: {s.get('malicious', 0)}/{s.get('total', 0)}"
+                                        for name, s in sources.items()
+                                    )
+                                    threat_intel_summaries.append(
+                                        f"Threat intel flagged file {f.file_path} ({src_details}, hash: {file_hash[:16]}...)"
+                                    )
                         analyzer.set_enrichment_context(
                             file_inventory={
                                 "total_files": len(skill.files),
@@ -262,6 +288,7 @@ class SkillScanner:
                             },
                             magic_mismatches=magic_mismatches if magic_mismatches else None,
                             static_findings_summary=static_summaries if static_summaries else None,
+                            threat_intel_summaries=threat_intel_summaries if threat_intel_summaries else None,
                         )
                     findings = analyzer.analyze(skill)
                     all_findings.extend(findings)

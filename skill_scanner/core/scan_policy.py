@@ -275,6 +275,26 @@ class AnalyzersPolicy:
 
 
 @dataclass
+class ThreatIntelPolicy:
+    """Controls multi-source threat intelligence analysis."""
+
+    enabled_backends: list[str] = field(default_factory=lambda: ["virustotal"])
+    upload_files: bool = False
+    extract_iocs: bool = True
+    # Environment variable names for API keys
+    virustotal_api_key_env: str = "VIRUSTOTAL_API_KEY"
+    threatbook_api_key_env: str = "THREATBOOK_API_KEY"
+    cuckoo_url_env: str = "CUCKOO_URL"
+    cuckoo_api_key_env: str = "CUCKOO_API_KEY"
+    otx_api_key_env: str = "OTX_API_KEY"
+    zftip_url_env: str = "ZFTIP_URL"
+    zftip_api_key_env: str = "ZFTIP_API_KEY"
+    # Timeouts
+    request_timeout: int = 10
+    cuckoo_poll_timeout: int = 120
+
+
+@dataclass
 class LLMAnalysisPolicy:
     """Controls LLM context budget thresholds for LLM and meta analyzers.
 
@@ -393,6 +413,7 @@ class ScanPolicy:
     sensitive_files: SensitiveFilesPolicy = field(default_factory=SensitiveFilesPolicy)
     command_safety: CommandSafetyPolicy = field(default_factory=CommandSafetyPolicy)
     analyzers: AnalyzersPolicy = field(default_factory=AnalyzersPolicy)
+    threat_intel: ThreatIntelPolicy = field(default_factory=ThreatIntelPolicy)
     llm_analysis: LLMAnalysisPolicy = field(default_factory=LLMAnalysisPolicy)
     finding_output: FindingOutputPolicy = field(default_factory=FindingOutputPolicy)
     severity_overrides: list[SeverityOverride] = field(default_factory=list)
@@ -535,6 +556,7 @@ class ScanPolicy:
         sf = d.get("sensitive_files", {})
         cs = d.get("command_safety", {})
         az = d.get("analyzers", {})
+        ti = d.get("threat_intel", {})
         la = d.get("llm_analysis", {})
         fo = d.get("finding_output", {})
 
@@ -634,6 +656,20 @@ class ScanPolicy:
                 static=az.get("static", True),
                 bytecode=az.get("bytecode", True),
                 pipeline=az.get("pipeline", True),
+            ),
+            threat_intel=ThreatIntelPolicy(
+                enabled_backends=ti.get("enabled_backends", ["virustotal"]),
+                upload_files=ti.get("upload_files", False),
+                extract_iocs=ti.get("extract_iocs", True),
+                virustotal_api_key_env=ti.get("virustotal_api_key_env", "VIRUSTOTAL_API_KEY"),
+                threatbook_api_key_env=ti.get("threatbook_api_key_env", "THREATBOOK_API_KEY"),
+                cuckoo_url_env=ti.get("cuckoo_url_env", "CUCKOO_URL"),
+                cuckoo_api_key_env=ti.get("cuckoo_api_key_env", "CUCKOO_API_KEY"),
+                otx_api_key_env=ti.get("otx_api_key_env", "OTX_API_KEY"),
+                zftip_url_env=ti.get("zftip_url_env", "ZFTIP_URL"),
+                zftip_api_key_env=ti.get("zftip_api_key_env", "ZFTIP_API_KEY"),
+                request_timeout=ti.get("request_timeout", 10),
+                cuckoo_poll_timeout=ti.get("cuckoo_poll_timeout", 120),
             ),
             llm_analysis=LLMAnalysisPolicy(
                 max_instruction_body_chars=la.get("max_instruction_body_chars", 20_000),
@@ -757,6 +793,20 @@ class ScanPolicy:
                 "static": self.analyzers.static,
                 "bytecode": self.analyzers.bytecode,
                 "pipeline": self.analyzers.pipeline,
+            },
+            "threat_intel": {
+                "enabled_backends": self.threat_intel.enabled_backends,
+                "upload_files": self.threat_intel.upload_files,
+                "extract_iocs": self.threat_intel.extract_iocs,
+                "virustotal_api_key_env": self.threat_intel.virustotal_api_key_env,
+                "threatbook_api_key_env": self.threat_intel.threatbook_api_key_env,
+                "cuckoo_url_env": self.threat_intel.cuckoo_url_env,
+                "cuckoo_api_key_env": self.threat_intel.cuckoo_api_key_env,
+                "otx_api_key_env": self.threat_intel.otx_api_key_env,
+                "zftip_url_env": self.threat_intel.zftip_url_env,
+                "zftip_api_key_env": self.threat_intel.zftip_api_key_env,
+                "request_timeout": self.threat_intel.request_timeout,
+                "cuckoo_poll_timeout": self.threat_intel.cuckoo_poll_timeout,
             },
             "llm_analysis": {
                 "max_instruction_body_chars": self.llm_analysis.max_instruction_body_chars,

@@ -101,6 +101,11 @@ def build_analyzers(
     use_trigger: bool = False,
     llm_consensus_runs: int = 1,
     llm_max_tokens: int | None = None,
+    # --- Threat Intel (unified multi-source) ---
+    use_threat_intel: bool = False,
+    threat_intel_backends: list[str] | None = None,
+    threat_intel_config: dict | None = None,
+    extract_iocs: bool = True,
 ) -> list[BaseAnalyzer]:
     """Build the full analyzer list (core + optional).
 
@@ -196,5 +201,74 @@ def build_analyzers(
             analyzers.append(TriggerAnalyzer())
         except (ImportError, ValueError, TypeError) as exc:
             logger.warning("Could not load Trigger analyzer: %s", exc)
+
+    # -- Unified threat intel analyzer (multi-source) ----------------------
+    if use_threat_intel:
+        try:
+            from .analyzers.threat_intel import ThreatIntelAnalyzer
+            from .analyzers.threat_intel.cuckoo_backend import CuckooBackend
+            from .analyzers.threat_intel.otx_backend import OTXBackend
+            from .analyzers.threat_intel.threatbook_backend import ThreatBookBackend
+            from .analyzers.threat_intel.virustotal_backend import VirusTotalBackend
+            from .analyzers.threat_intel.zftip_backend import ZftipBackend
+
+            config = threat_intel_config or {}
+            backends_to_load = threat_intel_backends or ["virustotal"]
+            upload = config.get("upload_files", False) or vt_upload_files
+            backends: list = []
+
+            for backend_name in backends_to_load:
+                name = backend_name.strip().lower()
+                if name == "virustotal":
+                    key = config.get("virustotal_api_key") or vt_api_key or os.getenv("VIRUSTOTAL_API_KEY")
+                    if key:
+                        backends.append(VirusTotalBackend(api_key=key))
+                    else:
+                        logger.warning("VirusTotal backend: no API key")
+                elif name == "threatbook":
+                    key = config.get("threatbook_api_key") or os.getenv("THREATBOOK_API_KEY")
+                    if key:
+                        backends.append(ThreatBookBackend(api_key=key))
+                    else:
+                        logger.warning("ThreatBook backend: no API key")
+                elif name == "cuckoo":
+                    url = config.get("cuckoo_url") or os.getenv("CUCKOO_URL")
+                    key = config.get("cuckoo_api_key") or os.getenv("CUCKOO_API_KEY")
+                    if url:
+                        backends.append(CuckooBackend(api_url=url, api_key=key))
+                    else:
+                        logger.warning("Cuckoo backend: no URL configured")
+                elif name == "otx":
+                    key = config.get("otx_api_key") or os.getenv("OTX_API_KEY")
+                    if key:
+                        backends.append(OTXBackend(api_key=key))
+                    else:
+                        logger.warning("OTX backend: no API key")
+                elif name == "zftip":
+                    url = config.get("zftip_url") or os.getenv("ZFTIP_URL")
+                    key = config.get("zftip_api_key") or os.getenv("ZFTIP_API_KEY")
+                    if url and key:
+                        backends.append(ZftipBackend(api_url=url, api_key=key))
+                    else:
+                        missing = []
+                        if not url:
+                            missing.append("URL")
+                        if not key:
+                            missing.append("API key")
+                        logger.warning("Zftip backend: no %s", " or ".join(missing))
+                else:
+                    logger.warning("Unknown threat intel backend: %s", backend_name)
+
+            if backends:
+                analyzers.append(ThreatIntelAnalyzer(
+                    backends=backends,
+                    upload_files=upload,
+                    extract_iocs=extract_iocs,
+                ))
+            else:
+                logger.warning("Threat intel requested but no backends could be configured")
+
+        except (ImportError, ValueError, TypeError) as exc:
+            logger.warning("Could not load threat intel analyzer: %s", exc)
 
     return analyzers
