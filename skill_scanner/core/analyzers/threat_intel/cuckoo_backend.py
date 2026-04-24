@@ -133,8 +133,8 @@ class CuckooBackend:
 
             # Map Cuckoo score to malicious indicators
             # Cuckoo score: 0 (clean) to 10 (very malicious)
-            malicious = 1 if score >= 4 else 0
-            suspicious = 1 if 2 <= score < 4 else 0
+            malicious = 1 if score >= 6 else 0
+            suspicious = 1 if 2 <= score < 6 else 0
 
             # Extract signature descriptions as tags
             sig_tags = tuple(

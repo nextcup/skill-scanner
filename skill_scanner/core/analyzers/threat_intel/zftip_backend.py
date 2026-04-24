@@ -105,10 +105,19 @@ class ZftipBackend:
 
             # Extract labels (threat tags)
             labels = info.get("label") or info.get("open_label") or []
-            if isinstance(labels, list) and labels:
+
+            # Determine threat level from category field
+            # category: 3=恶意, 2=可疑, 1=未知, 0=白名单
+            category = info.get("category")
+            if category == 3:
                 threat_level = "high"
-            else:
+            elif category == 2:
                 threat_level = "medium"
+            elif category == 0:
+                threat_level = "clean"
+            else:
+                # category==1 or missing → info
+                threat_level = "info"
 
             # Extract details
             details: dict = {}

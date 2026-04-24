@@ -1,7 +1,7 @@
 """
 ThreatBook (微步在线) threat intelligence backend.
 
-Supports file hash, IP, and domain reputation queries via ThreatBook v5 API.
+Supports file hash, IP, and domain reputation queries via ThreatBook v3 API.
 File submission is not supported.
 """
 
@@ -16,7 +16,7 @@ from .base import IOCIntelResult, ThreatIntelBackend, ThreatIntelResult
 
 logger = logging.getLogger(__name__)
 
-_TB_BASE_URL = "https://api.threatbook.cn/v5"
+_TB_BASE_URL = "https://api.threatbook.cn/v3"
 
 
 class ThreatBookBackend:
@@ -42,10 +42,10 @@ class ThreatBookBackend:
         )
 
     def query_hash(self, file_hash: str) -> ThreatIntelResult | None:
-        """Query ThreatBook for a file hash."""
+        """Query ThreatBook for a file hash via multi-engines API."""
         try:
             resp = self._session.get(
-                f"{self.base_url}/file/reputation",
+                f"{self.base_url}/file/report/multiengines",
                 params={"apikey": self.api_key, "sha256": file_hash},
             )
             if resp.status_code != 200:
@@ -57,26 +57,31 @@ class ThreatBookBackend:
             if response_code != 0:
                 return None
 
-            verbose_msg = data.get("verbose_msg", "")
-            threat_level = data.get("threat_level", "info")
-            # ThreatBook may return multi-engine results
-            positives = data.get("positives", 0)
-            total = data.get("total", 0)
+            me = data.get("data", {}).get("multiengines", {})
+            threat_level_raw = me.get("threat_level", "unknown")
+            positives = me.get("positives", 0)
+            total = me.get("total", 0)
 
-            # If no multi-engine data, derive from threat_level
+            # When no multi-engine data, use suspicious to express uncertainty
+            # (Fix #8: avoid inflating malicious ratio)
+            suspicious = 0
             if total == 0:
-                total = 1
-                if threat_level in ("high", "critical"):
-                    positives = 1
+                total = 10  # baseline denominator
+                if threat_level_raw == "malicious":
+                    suspicious = 5  # 50% suspicious
+                elif threat_level_raw == "suspicious":
+                    suspicious = 3  # 30% suspicious
+                # malicious stays 0 — don't fabricate detection ratio
 
             return ThreatIntelResult(
                 source="threatbook",
                 malicious=positives,
+                suspicious=suspicious,
                 total=total,
-                verdict=self._map_verdict(threat_level),
+                verdict=self._map_verdict(threat_level_raw),
                 permalink=data.get("permalink"),
                 scan_date=data.get("scan_date"),
-                details={"verbose_msg": verbose_msg, "threat_level": threat_level},
+                details={"multiengines_threat_level": threat_level_raw},
                 file_hash=file_hash,
             )
         except httpx.RequestError as e:
@@ -105,9 +110,9 @@ class ThreatBookBackend:
             return None
 
     def _query_ip(self, ip: str) -> IOCIntelResult | None:
-        """Query ThreatBook for an IP address."""
+        """Query ThreatBook for an IP address via IP Reputation API."""
         resp = self._session.get(
-            f"{self.base_url}/ip/reputation",
+            f"{self.base_url}/scene/ip_reputation",
             params={"apikey": self.api_key, "resource": ip},
         )
         if resp.status_code != 200:
@@ -116,9 +121,15 @@ class ThreatBookBackend:
         if data.get("response_code", -1) != 0:
             return None
 
-        threat_level = data.get("threat_level", "info")
-        tags = data.get("tags", [])
-        summary = data.get("summary", {})
+        # Response: {"data": {"<ip>": {"severity": "...", "is_malicious": bool, "tags_classes": [...]}}}
+        inner_data = data.get("data", {})
+        ip_info = inner_data.get(ip, {})
+        if not ip_info:
+            return None
+
+        severity = ip_info.get("severity", "info")
+        threat_level = self._normalize_severity(severity)
+        tags = self._extract_tags(ip_info.get("tags_classes", []))
 
         return IOCIntelResult(
             source="threatbook",
@@ -126,16 +137,19 @@ class ThreatBookBackend:
             ioc_value=ip,
             threat_level=threat_level,
             tags=tuple(tags),
-            permalink=data.get("permalink"),
-            details={"summary": summary, "severity": data.get("severity")},
+            permalink=ip_info.get("permalink"),
+            details={
+                "is_malicious": ip_info.get("is_malicious", False),
+                "severity": severity,
+            },
         )
 
     def _query_domain(self, domain: str) -> IOCIntelResult | None:
-        """Query ThreatBook for a domain."""
+        """Query ThreatBook for a domain via DNS Scene API."""
         if not domain:
             return None
         resp = self._session.get(
-            f"{self.base_url}/domain/reputation",
+            f"{self.base_url}/scene/dns",
             params={"apikey": self.api_key, "resource": domain},
         )
         if resp.status_code != 200:
@@ -144,9 +158,16 @@ class ThreatBookBackend:
         if data.get("response_code", -1) != 0:
             return None
 
-        threat_level = data.get("threat_level", "info")
-        tags = data.get("tags", [])
-        summary = data.get("summary", {})
+        # Response: {"data": {"domains": {"<domain>": {"severity": "...", "is_malicious": bool, ...}}}}
+        inner = data.get("data", {})
+        domains_data = inner.get("domains", {})
+        domain_info = domains_data.get(domain, {})
+        if not domain_info:
+            return None
+
+        severity = domain_info.get("severity", "info")
+        threat_level = self._normalize_severity(severity)
+        tags = self._extract_tags(domain_info.get("tags_classes", []))
 
         return IOCIntelResult(
             source="threatbook",
@@ -154,8 +175,11 @@ class ThreatBookBackend:
             ioc_value=domain,
             threat_level=threat_level,
             tags=tuple(tags),
-            permalink=data.get("permalink"),
-            details={"summary": summary},
+            permalink=domain_info.get("permalink"),
+            details={
+                "is_malicious": domain_info.get("is_malicious", False),
+                "severity": severity,
+            },
         )
 
     def _query_hash_as_ioc(self, file_hash: str) -> IOCIntelResult | None:
@@ -163,20 +187,37 @@ class ThreatBookBackend:
         result = self.query_hash(file_hash)
         if result is None:
             return None
+        # Derive threat_level from multiengines verdict
+        me_level = result.details.get("multiengines_threat_level", "unknown")
+        threat_level = self._normalize_multiengines_level(me_level)
         return IOCIntelResult(
             source="threatbook",
             ioc_type="hash",
             ioc_value=file_hash,
-            threat_level=result.details.get("threat_level", "info"),
+            threat_level=threat_level,
             tags=(),
             permalink=result.permalink,
         )
 
     @staticmethod
+    def _extract_tags(tags_classes: list[dict]) -> list[str]:
+        """Extract tag values from tags_classes.
+
+        ThreatBook tags may be plain strings or dicts with 'value' key.
+        """
+        result: list[str] = []
+        for tc in tags_classes:
+            for tag in tc.get("tags", []):
+                if isinstance(tag, str):
+                    result.append(tag)
+                elif isinstance(tag, dict) and tag.get("value"):
+                    result.append(tag["value"])
+        return result
+
+    @staticmethod
     def _extract_domain_from_url(url: str) -> str:
         """Extract domain from a URL for ThreatBook domain lookup."""
         try:
-            # Simple extraction: strip protocol and path
             stripped = url.split("://", 1)[-1]
             domain = stripped.split("/", 1)[0]
             # Remove port
@@ -186,14 +227,39 @@ class ThreatBookBackend:
             return ""
 
     @staticmethod
-    def _map_verdict(threat_level: str) -> str:
-        """Map ThreatBook threat_level to verdict."""
+    def _normalize_severity(severity: str) -> str:
+        """Map ThreatBook API severity to standard threat_level.
+
+        Used for IP and domain queries where ThreatBook returns severity field.
+        """
         mapping = {
-            "critical": "malicious",
-            "high": "malicious",
-            "medium": "suspicious",
-            "low": "suspicious",
-            "info": "clean",
+            "critical": "high",
+            "high": "high",
+            "medium": "medium",
+            "low": "low",
+            "info": "info",
             "safe": "clean",
+        }
+        return mapping.get(severity, "info")
+
+    @staticmethod
+    def _normalize_multiengines_level(threat_level: str) -> str:
+        """Map ThreatBook multiengines threat_level to standard threat_level."""
+        mapping = {
+            "malicious": "high",
+            "suspicious": "medium",
+            "clean": "clean",
+            "unknown": "info",
+        }
+        return mapping.get(threat_level, "info")
+
+    @staticmethod
+    def _map_verdict(threat_level: str) -> str:
+        """Map multiengines threat_level to verdict."""
+        mapping = {
+            "malicious": "malicious",
+            "suspicious": "suspicious",
+            "clean": "clean",
+            "unknown": "unknown",
         }
         return mapping.get(threat_level, "unknown")

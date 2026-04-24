@@ -60,7 +60,9 @@ class OTXBackend:
 
             # OTX doesn't have AV engines; use pulse count as indicator
             # More pulses = more threat intelligence consensus
-            malicious = 1 if pulse_count > 0 else 0
+            # Use min(pulse_count, 10) as malicious out of 10 total
+            # so a single pulse doesn't equal 100% detection ratio
+            malicious = min(pulse_count, 10) if pulse_count > 0 else 0
             verdict = "malicious" if pulse_count > 0 else "clean"
 
             # Extract AV classification if available
@@ -77,7 +79,7 @@ class OTXBackend:
             return ThreatIntelResult(
                 source="otx",
                 malicious=malicious,
-                total=max(pulse_count, 1),
+                total=10,
                 verdict=verdict,
                 permalink=f"https://otx.alienvault.com/indicator/file/{file_hash}",
                 details={
@@ -150,11 +152,21 @@ class OTXBackend:
         result = self.query_hash(file_hash)
         if result is None:
             return None
+        # Use pulse_count thresholds consistent with _parse_indicator_response
+        pulse_count = result.details.get("pulse_count", 0)
+        if pulse_count >= 5:
+            threat_level = "high"
+        elif pulse_count >= 2:
+            threat_level = "medium"
+        elif pulse_count >= 1:
+            threat_level = "low"
+        else:
+            threat_level = "info"
         return IOCIntelResult(
             source="otx",
             ioc_type="hash",
             ioc_value=file_hash,
-            threat_level="high" if result.malicious > 0 else "clean",
+            threat_level=threat_level,
             tags=tuple(result.details.get("tags", [])),
             permalink=result.permalink,
         )

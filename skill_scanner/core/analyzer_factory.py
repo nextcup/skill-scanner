@@ -205,6 +205,10 @@ def build_analyzers(
     # -- Unified threat intel analyzer (multi-source) ----------------------
     if use_threat_intel:
         try:
+            from ..config.config import load_dotenv
+
+            load_dotenv()
+
             from .analyzers.threat_intel import ThreatIntelAnalyzer
             from .analyzers.threat_intel.cuckoo_backend import CuckooBackend
             from .analyzers.threat_intel.otx_backend import OTXBackend

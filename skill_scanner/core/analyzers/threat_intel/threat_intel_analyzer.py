@@ -173,11 +173,14 @@ class ThreatIntelAnalyzer(BaseAnalyzer):
     def _aggregate_file_severity(results: dict[str, ThreatIntelResult]) -> Severity:
         """Determine severity from multi-source file hash results."""
         max_ratio = 0.0
+        max_suspicious_ratio = 0.0
         source_count_with_hits = 0
         for r in results.values():
             if r.total > 0:
                 ratio = r.malicious / r.total
                 max_ratio = max(max_ratio, ratio)
+                suspicious_ratio = r.suspicious / r.total
+                max_suspicious_ratio = max(max_suspicious_ratio, suspicious_ratio)
             if r.malicious > 0:
                 source_count_with_hits += 1
 
@@ -190,6 +193,13 @@ class ThreatIntelAnalyzer(BaseAnalyzer):
             return Severity.HIGH
         if source_count_with_hits >= 2:
             return Severity.HIGH
+
+        # Suspicious ratio (lower severity tier than malicious)
+        if max_suspicious_ratio >= 0.3:
+            return Severity.HIGH
+        if max_suspicious_ratio >= 0.1:
+            return Severity.MEDIUM
+
         return Severity.MEDIUM
 
     @staticmethod
@@ -251,8 +261,12 @@ class ThreatIntelAnalyzer(BaseAnalyzer):
                             backend.name, ioc.type, ioc.value, e,
                         )
 
-            # Only create finding if at least one source reports a threat
-            if any(r.threat_level in ("high", "medium") for r in source_results.values()):
+            # Only create finding if at least one source reports an elevated threat
+            # or 2+ sources report "low"
+            threat_levels = [r.threat_level for r in source_results.values()]
+            has_elevated = any(t in ("high", "medium") for t in threat_levels)
+            low_count = sum(1 for t in threat_levels if t == "low")
+            if has_elevated or low_count >= 2:
                 findings.append(self._create_ioc_finding(ioc, source_results))
 
         return findings
