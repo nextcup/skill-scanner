@@ -338,7 +338,7 @@ def _write_output(args: argparse.Namespace, output: str) -> None:
     """Write *output* to a file or stdout, and emit any additional formats."""
     formats = _get_formats(args)
     primary_fmt = formats[0] if formats else "summary"
-    render_md = sys.stdout.isatty() and not getattr(args, "no_render_markdown", False)
+    render_md = _should_render_markdown(args)
 
     # Primary format: --output-<fmt> (explicit) > --output (generic) > stdout
     primary_file = getattr(args, f"output_{primary_fmt}", None) or args.output
@@ -371,6 +371,15 @@ def _write_output(args: argparse.Namespace, output: str) -> None:
                         console.print(Markdown(formatted))
                     else:
                         print(formatted)
+
+
+def _should_render_markdown(args: argparse.Namespace) -> bool:
+    """Decide whether markdown should be rendered for terminal output."""
+    if getattr(args, "no_render_markdown", False):
+        return False
+    if getattr(args, "render_markdown", False):
+        return True
+    return sys.stdout.isatty()
 
 
 # ---------------------------------------------------------------------------
@@ -931,7 +940,13 @@ def _add_common_scan_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--output-table", help="Write Table report to this file")
     parser.add_argument("--output-csv", help="Write CSV report to this file")
     parser.add_argument("--detailed", action="store_true", help="Include detailed findings (Markdown output only)")
-    parser.add_argument(
+    md_render_group = parser.add_mutually_exclusive_group()
+    md_render_group.add_argument(
+        "--render-markdown",
+        action="store_true",
+        help="With --format markdown: render markdown even when stdout is not detected as a TTY.",
+    )
+    md_render_group.add_argument(
         "--no-render-markdown",
         action="store_true",
         help="With --format markdown to terminal: print raw markdown instead of rendering (for pipe/copy).",
@@ -968,7 +983,12 @@ def _add_common_scan_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--use-aidefense", action="store_true", help="Enable AI Defense analyzer (requires API key)")
     parser.add_argument("--aidefense-api-key", help="AI Defense API key (or set AI_DEFENSE_API_KEY)")
     parser.add_argument("--aidefense-api-url", help="AI Defense API URL (optional, defaults to US region)")
-    parser.add_argument("--llm-provider", choices=["anthropic", "openai"], default="anthropic", help="LLM provider")
+    parser.add_argument(
+        "--llm-provider",
+        choices=["anthropic", "openai", "openai-compatible"],
+        default=None,
+        help="LLM provider shortcut or explicit OpenAI-compatible override",
+    )
     parser.add_argument(
         "--llm-consensus-runs",
         type=int,

@@ -23,6 +23,7 @@ jobs:
       url: https://pypi.org/p/cisco-ai-skill-scanner
     permissions:
       id-token: write
+      contents: write  # needed to create/update the GitHub release assets
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -39,5 +40,59 @@ jobs:
       - name: Build
         run: uv build
 
+      # Export a hash-pinned requirements.txt so plain `pip` users can reproduce
+      # the same locked tree without needing uv. Kept outside dist/ so the PyPI
+      # publish step doesn't try to upload it as a distribution.
+      - name: Export hash-pinned requirements.txt
+        run: |
+          mkdir -p release-assets
+          uv export \
+            --frozen \
+            --no-dev \
+            --all-extras \
+            --no-emit-project \
+            --output-file release-assets/requirements.txt
+
+      - name: Check GitHub release state
+        id: release-state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          if gh release view "$VERSION" --json isDraft --jq '.isDraft' >/tmp/release-is-draft; then
+            is_draft="$(</tmp/release-is-draft)"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "draft=$is_draft" >> "$GITHUB_OUTPUT"
+
+            if [[ "$is_draft" == "false" ]]; then
+              echo "published=true" >> "$GITHUB_OUTPUT"
+              echo "::warning::GitHub release $VERSION is already published. Immutable releases cannot accept new assets, so requirements.txt upload will be skipped."
+            else
+              echo "published=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "draft=false" >> "$GITHUB_OUTPUT"
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Attach requirements.txt to draft GitHub release
+        if: steps.release-state.outputs.published != 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.version }}
+          files: release-assets/requirements.txt
+          fail_on_unmatched_files: true
+          draft: true
+
       - name: Publish package distributions to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
+
+      - name: Publish GitHub release
+        if: steps.release-state.outputs.published != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: gh release edit "$VERSION" --draft=false
