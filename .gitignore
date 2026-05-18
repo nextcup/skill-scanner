@@ -80,6 +80,9 @@ docs/superpowers
 /mcp-scanner-reference/
 demo/
 
+# Swagger UI static assets (downloaded during Docker build)
+skill_scanner/api/static/
+
 # OS
 .DS_Store
 Thumbs.db
@@ -119,3 +122,12 @@ scan_policy.yaml/
 
 # skill目录下重复的skill_scanner
 
+# Local-only docs and config (not tracked upstream)
+docs/reference/api-endpoint-reference.md
+docs/reference/cli-command-reference.md
+docs/reference/configuration-reference.md
+docs/user-guide/api-endpoints-detail.md
+
+# docker images
+skill-scanner-linux-amd64.tar
+skill-scanner-linux-amd64.tar.*

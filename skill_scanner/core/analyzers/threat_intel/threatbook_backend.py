@@ -17,6 +17,9 @@ from .base import IOCIntelResult, ThreatIntelBackend, ThreatIntelResult
 logger = logging.getLogger(__name__)
 
 _TB_BASE_URL = "https://api.threatbook.cn/v3"
+_TB_FALLBACK_TOTAL = 10
+_TB_FALLBACK_MALICIOUS_SUSPICIOUS = 5
+_TB_FALLBACK_SUSPICIOUS_SUSPICIOUS = 3
 
 
 class ThreatBookBackend:
@@ -66,11 +69,11 @@ class ThreatBookBackend:
             # (Fix #8: avoid inflating malicious ratio)
             suspicious = 0
             if total == 0:
-                total = 10  # baseline denominator
+                total = _TB_FALLBACK_TOTAL
                 if threat_level_raw == "malicious":
-                    suspicious = 5  # 50% suspicious
+                    suspicious = _TB_FALLBACK_MALICIOUS_SUSPICIOUS
                 elif threat_level_raw == "suspicious":
-                    suspicious = 3  # 30% suspicious
+                    suspicious = _TB_FALLBACK_SUSPICIOUS_SUSPICIOUS
                 # malicious stays 0 — don't fabricate detection ratio
 
             return ThreatIntelResult(

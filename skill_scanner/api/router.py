@@ -24,6 +24,7 @@ full CLI/API parity.
 
 import logging
 import os
+import pickle
 import shutil
 import tempfile
 import threading
@@ -116,38 +117,87 @@ MAX_ZIP_ENTRIES = 500  # max files extracted from uploaded ZIP
 MAX_ZIP_UNCOMPRESSED_BYTES = 200 * 1024 * 1024  # 200 MB uncompressed limit
 MAX_CACHE_ENTRIES = 1_000  # evict oldest when exceeded
 CACHE_TTL_SECONDS = 3600  # 1 hour
+CACHE_DIR = Path(tempfile.gettempdir()) / "skill_scanner_cache"  # Shared cache directory
 
 
-# In-memory storage for async scans with bounded LRU eviction and TTL.
-# In production, use Redis or a database instead.
-class _BoundedCache(OrderedDict[str, dict]):
-    """OrderedDict with max-size eviction and per-entry TTL."""
+def _ensure_cache_dir():
+    """Ensure cache directory exists."""
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+_ensure_cache_dir()
+
+
+# File-based cache for async scans - shares state across workers.
+# Each scan_id gets its own file under CACHE_DIR.
+class _FileBasedCache:
+    """File-based cache with TTL - shares state across Gunicorn workers."""
 
     def __init__(self):
-        super().__init__()
         self._lock = threading.Lock()
+
+    def _get_cache_file(self, key: str) -> Path:
+        return CACHE_DIR / f"{key}.cache"
 
     def set(self, key: str, value: dict) -> None:
         with self._lock:
             value["_cached_at"] = time.monotonic()
-            self[key] = value
-            self.move_to_end(key)
-            while len(self) > MAX_CACHE_ENTRIES:
-                self.popitem(last=False)
+            cache_file = self._get_cache_file(key)
+
+            # Write to temporary file first, then rename (atomic operation)
+            temp_file = cache_file.with_suffix(".tmp")
+            try:
+                with open(temp_file, "wb") as f:
+                    pickle.dump(value, f)
+                temp_file.replace(cache_file)
+
+                # Clean up old entries if exceeding limit
+                self._cleanup_old_entries()
+            except Exception as e:
+                logger.error(f"Failed to write cache file {cache_file}: {e}")
+                if temp_file.exists():
+                    temp_file.unlink()
 
     def get_valid(self, key: str) -> dict | None:
         with self._lock:
-            entry = self.get(key)
-            if entry is None:
+            cache_file = self._get_cache_file(key)
+
+            if not cache_file.exists():
                 return None
-            if time.monotonic() - entry.get("_cached_at", 0) > CACHE_TTL_SECONDS:
-                del self[key]
+
+            try:
+                with open(cache_file, "rb") as f:
+                    entry = pickle.load(f)
+
+                # Check TTL
+                if time.monotonic() - entry.get("_cached_at", 0) > CACHE_TTL_SECONDS:
+                    cache_file.unlink(missing_ok=True)
+                    return None
+
+                result: dict = entry
+                return result
+
+            except Exception as e:
+                logger.error(f"Failed to read cache file {cache_file}: {e}")
+                # Clean up corrupted file
+                cache_file.unlink(missing_ok=True)
                 return None
-            result: dict = entry
-            return result
+
+    def _cleanup_old_entries(self):
+        """Remove oldest cache entries if exceeding MAX_CACHE_ENTRIES."""
+        try:
+            cache_files = list(CACHE_DIR.glob("*.cache"))
+            if len(cache_files) > MAX_CACHE_ENTRIES:
+                # Sort by modification time and remove oldest
+                cache_files.sort(key=lambda p: p.stat().st_mtime)
+                for old_file in cache_files[: (len(cache_files) - MAX_CACHE_ENTRIES)]:
+                    old_file.unlink(missing_ok=True)
+        except Exception as e:
+            logger.warning(f"Failed to cleanup old cache entries: {e}")
 
 
-scan_results_cache = _BoundedCache()
+# Use file-based cache to support multi-worker deployments
+scan_results_cache = _FileBasedCache()
 
 # Environment-configurable allowlist of directories the API may access.
 # When empty (default) any *resolved* absolute path is accepted — operators
@@ -214,6 +264,7 @@ class ScanResponse(BaseModel):
     scan_duration_seconds: float
     timestamp: str
     findings: list[dict]
+    meta_analysis: dict | None = Field(None, description="Meta-analysis results if enabled")
 
 
 class HealthResponse(BaseModel):
@@ -422,6 +473,13 @@ async def scan_skill(
             result = await loop.run_in_executor(executor, run_scan)
 
         # Meta-analysis
+        meta_analysis_result = None
+
+        # 记录 meta 分析条件检查
+        logger.info(f"Meta-analysis check: enable_meta={request.enable_meta}, "
+                   f"META_AVAILABLE={META_AVAILABLE}, "
+                   f"findings_count={len(result.findings)}")
+
         if (
             request.enable_meta
             and META_AVAILABLE
@@ -432,10 +490,15 @@ async def scan_skill(
             try:
                 from ..core.loader import SkillLoader
 
-                meta_analyzer = MetaAnalyzer(policy=policy)
+                # 显式传递 API key
+                meta_api_key = os.getenv("SKILL_SCANNER_META_LLM_API_KEY") or os.getenv("SKILL_SCANNER_LLM_API_KEY")
+                logger.info(f"Initializing MetaAnalyzer with API key: {'configured' if meta_api_key else 'MISSING'}")
+
+                meta_analyzer = MetaAnalyzer(policy=policy, api_key=meta_api_key)
                 loader = SkillLoader()
                 skill = loader.load_skill(skill_dir)
 
+                logger.info(f"Starting meta-analysis for {len(result.findings)} findings...")
                 meta_result = await meta_analyzer.analyze_with_findings(
                     skill=skill,
                     findings=result.findings,
@@ -449,6 +512,10 @@ async def scan_skill(
                 )
                 result.findings = filtered_findings
                 result.analyzers_used.append("meta_analyzer")
+
+                # 保存 meta 分析结果用于响应
+                meta_analysis_result = meta_result.to_dict()
+                logger.info(f"Meta-analysis completed: {meta_analysis_result.get('summary', {})}")
             except Exception as meta_error:
                 logger.warning("Meta-analysis failed: %s", meta_error)
 
@@ -462,6 +529,7 @@ async def scan_skill(
             scan_duration_seconds=result.scan_duration_seconds,
             timestamp=result.timestamp.isoformat(),
             findings=[f.to_dict() for f in result.findings],
+            meta_analysis=meta_analysis_result,
         )
 
     except ValueError as e:
@@ -589,6 +657,100 @@ async def scan_uploaded_skill(
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+@router.post("/scan-upload-async")
+async def scan_uploaded_skill_async(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(..., description="ZIP file containing skill package"),
+    policy: str | None = Form(None, description="Scan policy: preset name or path to YAML"),
+    custom_rules: str | None = Form(None, description="Path to custom YARA rules directory"),
+    use_llm: bool = Form(False, description="Enable LLM analyzer"),
+    llm_provider: str = Form("anthropic", description="LLM provider"),
+    use_behavioral: bool = Form(False, description="Enable behavioral analyzer"),
+    use_virustotal: bool = Form(False, description="Enable VirusTotal scanner"),
+    vt_api_key: str | None = Header(None, alias="X-VirusTotal-Key"),
+    vt_upload_files: bool = Form(False, description="Upload unknown files to VirusTotal"),
+    use_aidefense: bool = Form(False, description="Enable AI Defense analyzer"),
+    aidefense_api_key: str | None = Header(None, alias="X-AIDefense-Key"),
+    aidefense_api_url: str | None = Form(None, description="AI Defense API URL"),
+    use_trigger: bool = Form(False, description="Enable trigger specificity analysis"),
+    enable_meta: bool = Form(False, description="Enable meta-analysis for FP filtering"),
+    llm_consensus_runs: int = Form(1, description="Number of LLM consensus runs"),
+):
+    """异步扫描上传的技能包（ZIP 文件）。
+
+    立即返回 scan_id，使用 GET /scan-upload-async/{scan_id} 查询结果。
+    """
+    if not file.filename or not file.filename.endswith(".zip"):
+        raise HTTPException(status_code=400, detail="File must be a ZIP archive")
+
+    # 创建临时目录（不会在请求结束时清理）
+    temp_dir = Path(tempfile.mkdtemp(prefix="skill_scanner_async_"))
+
+    try:
+        # 保存上传文件
+        zip_path = temp_dir / file.filename
+        total_read = 0
+        chunk_size = 1024 * 1024  # 1 MB chunks
+
+        with open(zip_path, "wb") as f:
+            while True:
+                chunk = await file.read(chunk_size)
+                if not chunk:
+                    break
+                total_read += len(chunk)
+                if total_read > MAX_UPLOAD_SIZE_BYTES:
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"Upload exceeds maximum size of {MAX_UPLOAD_SIZE_BYTES // (1024 * 1024)} MB",
+                    )
+                f.write(chunk)
+
+        # 生成 scan_id
+        scan_id = str(uuid.uuid4())
+
+        # 设置缓存状态为 processing
+        scan_results_cache.set(scan_id, {"status": "processing", "started_at": datetime.now().isoformat(), "result": None})
+
+        # 启动后台任务（不在 finally 中清理临时目录）
+        background_tasks.add_task(
+            run_upload_scan,
+            scan_id,
+            zip_path,
+            temp_dir,
+            policy,
+            custom_rules,
+            use_llm,
+            llm_provider,
+            use_behavioral,
+            use_virustotal,
+            vt_upload_files,
+            use_aidefense,
+            aidefense_api_url,
+            use_trigger,
+            enable_meta,
+            llm_consensus_runs,
+            vt_api_key,
+            aidefense_api_key,
+        )
+
+        return {
+            "scan_id": scan_id,
+            "status": "processing",
+            "message": "scan-upload started. Use GET /scan-upload-async/{scan_id} to check status.",
+        }
+
+    except HTTPException:
+        # 重新抛出 HTTP 异常
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise
+
+    except Exception as e:
+        # 清理临时目录
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise HTTPException(status_code=500, detail=f"Failed to start async scan: {str(e)}") from e
+
+
 @router.post("/scan-batch")
 async def scan_batch(
     request: BatchScanRequest,
@@ -620,6 +782,33 @@ async def scan_batch(
 @router.get("/scan-batch/{scan_id}")
 async def get_batch_scan_result(scan_id: str):
     """Get results of a batch scan."""
+    cached = scan_results_cache.get_valid(scan_id)
+    if cached is None:
+        raise HTTPException(status_code=404, detail="Scan ID not found or expired")
+
+    if cached["status"] == "processing":
+        return {"scan_id": scan_id, "status": "processing", "started_at": cached["started_at"]}
+    elif cached["status"] == "completed":
+        return {
+            "scan_id": scan_id,
+            "status": "completed",
+            "started_at": cached["started_at"],
+            "completed_at": cached.get("completed_at"),
+            "result": cached["result"],
+        }
+    else:
+        return {"scan_id": scan_id, "status": "error", "error": cached.get("error", "Unknown error")}
+
+
+@router.get("/scan-upload-async/{scan_id}")
+async def get_upload_scan_result(scan_id: str):
+    """获取异步扫描结果。
+
+    返回扫描状态：
+    - processing: 扫描进行中
+    - completed: 扫描完成，包含完整结果
+    - error: 扫描失败，包含错误信息
+    """
     cached = scan_results_cache.get_valid(scan_id)
     if cached is None:
         raise HTTPException(status_code=404, detail="Scan ID not found or expired")
@@ -685,12 +874,20 @@ def run_batch_scan(
             import asyncio
 
             async def _run_batch_meta(scanner_ref, report_ref, policy_ref):
-                meta_analyzer = MetaAnalyzer(policy=policy_ref)
+                # 显式传递 API key
+                meta_api_key = os.getenv("SKILL_SCANNER_META_LLM_API_KEY") or os.getenv("SKILL_SCANNER_LLM_API_KEY")
+                logger.info(f"Batch meta-analysis: API key {'configured' if meta_api_key else 'MISSING'}")
+
+                meta_analyzer = MetaAnalyzer(policy=policy_ref, api_key=meta_api_key)
+
+                meta_results_count = 0
                 for result in report_ref.scan_results:
                     if result.findings:
                         try:
                             skill_dir_path = Path(result.skill_directory)
                             skill = scanner_ref.loader.load_skill(skill_dir_path)
+                            logger.info(f"Running meta-analysis for skill: {result.skill_name} ({len(result.findings)} findings)")
+
                             meta_result = await meta_analyzer.analyze_with_findings(
                                 skill=skill,
                                 findings=result.findings,
@@ -703,19 +900,25 @@ def run_batch_scan(
                             )
                             result.findings = filtered_findings
                             result.analyzers_used.append("meta_analyzer")
-                        except Exception:
-                            pass
+                            meta_results_count += 1
+
+                            summary = meta_result.to_dict().get("summary", {})
+                            logger.info(f"Meta-analysis completed for {result.skill_name}: {summary}")
+                        except Exception as e:
+                            logger.warning(f"Meta-analysis failed for {result.skill_name}: {e}")
+
+                logger.info(f"Batch meta-analysis completed: {meta_results_count}/{len(report_ref.scan_results)} skills processed")
 
             try:
                 asyncio.run(_run_batch_meta(scanner, report, policy))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Batch meta-analysis failed: {e}")
 
         # Keep batch summary counters consistent with potentially mutated
         # per-skill findings (e.g., after meta-analysis filtering).
         _recompute_report_summary(report)
 
-        started_at = scan_results_cache.get(scan_id, {}).get("started_at", datetime.now().isoformat())
+        started_at = (scan_results_cache.get_valid(scan_id) or {}).get("started_at", datetime.now().isoformat())
         scan_results_cache.set(
             scan_id,
             {
@@ -727,7 +930,7 @@ def run_batch_scan(
         )
 
     except Exception as e:
-        started_at = scan_results_cache.get(scan_id, {}).get("started_at", datetime.now().isoformat())
+        started_at = (scan_results_cache.get_valid(scan_id) or {}).get("started_at", datetime.now().isoformat())
         scan_results_cache.set(
             scan_id,
             {
@@ -736,6 +939,189 @@ def run_batch_scan(
                 "error": str(e),
             },
         )
+
+
+def run_upload_scan(
+    scan_id: str,
+    zip_path: Path,
+    temp_dir: Path,
+    policy_str: str | None,
+    custom_rules: str | None,
+    use_llm: bool,
+    llm_provider: str,
+    use_behavioral: bool,
+    use_virustotal: bool,
+    vt_upload_files: bool,
+    use_aidefense: bool,
+    aidefense_api_url: str | None,
+    use_trigger: bool,
+    enable_meta: bool,
+    llm_consensus_runs: int,
+    vt_api_key: str | None = None,
+    aidefense_api_key: str | None = None,
+):
+    """Background task to scan uploaded ZIP file."""
+    try:
+        import stat
+        import zipfile
+
+        # 解压 ZIP 文件
+        try:
+            with zipfile.ZipFile(zip_path, "r") as zip_ref:
+                # 验证条目数量和解压大小
+                entries = [info for info in zip_ref.infolist() if not info.is_dir()]
+                if len(entries) > MAX_ZIP_ENTRIES:
+                    raise ValueError(f"ZIP contains {len(entries)} files, exceeding limit of {MAX_ZIP_ENTRIES}")
+                total_uncompressed = sum(info.file_size for info in entries)
+                if total_uncompressed > MAX_ZIP_UNCOMPRESSED_BYTES:
+                    raise ValueError(
+                        f"ZIP uncompressed size ({total_uncompressed // (1024 * 1024)} MB) "
+                        f"exceeds limit of {MAX_ZIP_UNCOMPRESSED_BYTES // (1024 * 1024)} MB"
+                    )
+
+                # 检查路径遍历和符号链接
+                extract_root = (temp_dir / "extracted").resolve()
+                for info in zip_ref.infolist():
+                    unix_mode = (info.external_attr >> 16) & 0xFFFF
+                    if unix_mode != 0 and stat.S_ISLNK(unix_mode):
+                        raise ValueError("ZIP contains symbolic link entries")
+                    dest_path = (extract_root / info.filename).resolve()
+                    if not dest_path.is_relative_to(extract_root):
+                        raise ValueError("ZIP contains path traversal entries")
+
+                # 解压文件
+                extract_root.mkdir(parents=True, exist_ok=True)
+                for info in zip_ref.infolist():
+                    zip_ref.extract(info, extract_root)
+                    dest_path = (extract_root / info.filename).resolve()
+                    if dest_path.is_symlink():
+                        dest_path.unlink()
+                        raise ValueError("ZIP extraction produced a symbolic link — rejected")
+
+        except zipfile.BadZipFile as e:
+            raise ValueError("Invalid ZIP archive") from e
+
+        # 查找 SKILL.md
+        extracted_dir = temp_dir / "extracted"
+        skill_dirs = list(extracted_dir.rglob("SKILL.md"))
+
+        if not skill_dirs:
+            raise ValueError("No SKILL.md found in uploaded archive")
+
+        skill_dir = skill_dirs[0].parent
+
+        # 解析策略
+        policy = _resolve_policy(policy_str)
+
+        custom_rules_path: str | None = None
+        if custom_rules:
+            custom_rules_path = str(_validate_path(custom_rules, label="custom_rules"))
+
+        # 构建分析器
+        analyzers = _build_analyzers(
+            policy,
+            custom_rules=custom_rules_path,
+            use_behavioral=use_behavioral,
+            use_llm=use_llm,
+            llm_provider=llm_provider,
+            use_virustotal=use_virustotal,
+            vt_api_key=vt_api_key,
+            vt_upload_files=vt_upload_files,
+            use_aidefense=use_aidefense,
+            aidefense_api_key=aidefense_api_key,
+            aidefense_api_url=aidefense_api_url,
+            use_trigger=use_trigger,
+            llm_consensus_runs=llm_consensus_runs,
+        )
+
+        # 执行扫描
+        scanner = SkillScanner(analyzers=analyzers, policy=policy)
+        result = scanner.scan_skill(skill_dir)
+
+        # Meta 分析
+        meta_analysis_result = None
+
+        if (
+            enable_meta
+            and META_AVAILABLE
+            and MetaAnalyzer is not None
+            and apply_meta_analysis_to_results is not None
+            and len(result.findings) > 0
+        ):
+            try:
+                from ..core.loader import SkillLoader
+
+                meta_api_key = os.getenv("SKILL_SCANNER_META_LLM_API_KEY") or os.getenv("SKILL_SCANNER_LLM_API_KEY")
+                logger.info(f"Async meta-analysis: API key {'configured' if meta_api_key else 'MISSING'}")
+
+                meta_analyzer = MetaAnalyzer(policy=policy, api_key=meta_api_key)
+                loader = SkillLoader()
+                skill = loader.load_skill(skill_dir)
+
+                logger.info(f"Starting async meta-analysis for {len(result.findings)} findings...")
+
+                async def _run_meta():
+                    nonlocal meta_analysis_result
+                    meta_result = await meta_analyzer.analyze_with_findings(
+                        skill=skill,
+                        findings=result.findings,
+                        analyzers_used=result.analyzers_used,
+                    )
+                    return meta_result
+
+                import asyncio
+
+                meta_result = asyncio.run(_run_meta())
+                filtered_findings = apply_meta_analysis_to_results(
+                    original_findings=result.findings,
+                    meta_result=meta_result,
+                    skill=skill,
+                )
+                result.findings = filtered_findings
+                result.analyzers_used.append("meta_analyzer")
+                meta_analysis_result = meta_result.to_dict()
+                logger.info(f"Async meta-analysis completed: {meta_analysis_result.get('summary', {})}")
+
+            except Exception as meta_error:
+                logger.warning("Async meta-analysis failed: %s", meta_error)
+
+        # 更新缓存为 completed
+        started_at = (scan_results_cache.get_valid(scan_id) or {}).get("started_at", datetime.now().isoformat())
+        scan_results_cache.set(
+            scan_id,
+            {
+                "status": "completed",
+                "started_at": started_at,
+                "completed_at": datetime.now().isoformat(),
+                "result": {
+                    "scan_id": scan_id,
+                    "skill_name": result.skill_name,
+                    "is_safe": result.is_safe,
+                    "max_severity": result.max_severity.value,
+                    "findings_count": len(result.findings),
+                    "scan_duration_seconds": result.scan_duration_seconds,
+                    "timestamp": result.timestamp.isoformat(),
+                    "findings": [f.to_dict() for f in result.findings],
+                    "meta_analysis": meta_analysis_result,
+                },
+            },
+        )
+
+    except Exception as e:
+        logger.exception("Async upload scan failed")
+        started_at = (scan_results_cache.get_valid(scan_id) or {}).get("started_at", datetime.now().isoformat())
+        scan_results_cache.set(
+            scan_id,
+            {
+                "status": "error",
+                "started_at": started_at,
+                "error": str(e),
+            },
+        )
+
+    finally:
+        # 清理临时目录
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 @router.get("/analyzers")

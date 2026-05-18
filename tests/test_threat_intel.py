@@ -14,8 +14,11 @@ import pytest
 
 from skill_scanner.config.config import load_dotenv
 
-# Load .env so integration tests can read API keys/URLs
-load_dotenv()
+
+@pytest.fixture(autouse=True, scope="session")
+def _load_env():
+    """Load .env only for integration tests that need API keys."""
+    load_dotenv()
 
 from skill_scanner.core.analyzers.threat_intel.base import (
     IOCIntelResult,
@@ -597,9 +600,10 @@ class TestOTXBackend:
         b = OTXBackend(api_key="test-key")
         result = b.query_hash("abc123")
         assert result is not None
-        assert result.malicious == 3  # min(pulse_count=3, 10)
+        assert result.malicious == 0  # pulse_count=3 < 5 → not malicious
+        assert result.suspicious == 3  # min(pulse_count=3, 4) = 3
         assert result.total == 10
-        assert result.verdict == "malicious"
+        assert result.verdict == "suspicious"
         assert len(result.details["pulse_names"]) == 2
 
     @pytest.mark.integration
@@ -692,17 +696,18 @@ class TestSeverityAggregation:
         }
         assert ThreatIntelAnalyzer._aggregate_file_severity(results) == Severity.HIGH
 
-    def test_low_ratio_is_medium(self):
+    def test_low_ratio_is_low(self):
+        """Single source with low detection ratio (4%) should return LOW."""
         results = {
             "vt": ThreatIntelResult(source="vt", malicious=2, total=50),
         }
-        assert ThreatIntelAnalyzer._aggregate_file_severity(results) == Severity.MEDIUM
+        assert ThreatIntelAnalyzer._aggregate_file_severity(results) == Severity.LOW
 
     def test_multi_source_boosts_severity(self):
         results = {
             "vt": ThreatIntelResult(source="vt", malicious=8, total=50),
             "tb": ThreatIntelResult(source="tb", malicious=5, total=30),
-            "otx": ThreatIntelResult(source="otx", malicious=3, total=10),
+            "otx": ThreatIntelResult(source="otx", malicious=7, total=10),
         }
         # 3 sources with hits, max_ratio >= 0.1 → CRITICAL
         assert ThreatIntelAnalyzer._aggregate_file_severity(results) == Severity.CRITICAL

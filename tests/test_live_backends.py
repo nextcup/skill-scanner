@@ -13,7 +13,11 @@ import pytest
 
 from skill_scanner.config.config import load_dotenv
 
-load_dotenv()
+
+@pytest.fixture(autouse=True, scope="session")
+def _load_env():
+    """Load .env for live integration tests that need API keys."""
+    load_dotenv()
 
 
 # ---------------------------------------------------------------------------

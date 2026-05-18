@@ -60,10 +60,18 @@ class OTXBackend:
 
             # OTX doesn't have AV engines; use pulse count as indicator
             # More pulses = more threat intelligence consensus
-            # Use min(pulse_count, 10) as malicious out of 10 total
-            # so a single pulse doesn't equal 100% detection ratio
-            malicious = min(pulse_count, 10) if pulse_count > 0 else 0
-            verdict = "malicious" if pulse_count > 0 else "clean"
+            # Map pulse_count to malicious/total using consistent thresholds:
+            #   >=5 pulses → malicious (proportional), total=10
+            #   1-4 pulses → suspicious (proportional), total=10
+            #   0 pulses   → clean
+            total = 10
+            malicious = 0
+            suspicious = 0
+            if pulse_count >= 5:
+                malicious = min(pulse_count, 10)
+            elif pulse_count >= 1:
+                suspicious = min(pulse_count, 4)
+            verdict = "malicious" if pulse_count >= 5 else ("suspicious" if pulse_count >= 1 else "clean")
 
             # Extract AV classification if available
             av_classification = {}
@@ -79,7 +87,8 @@ class OTXBackend:
             return ThreatIntelResult(
                 source="otx",
                 malicious=malicious,
-                total=10,
+                suspicious=suspicious,
+                total=total,
                 verdict=verdict,
                 permalink=f"https://otx.alienvault.com/indicator/file/{file_hash}",
                 details={

@@ -200,7 +200,8 @@ class ThreatIntelAnalyzer(BaseAnalyzer):
         if max_suspicious_ratio >= 0.1:
             return Severity.MEDIUM
 
-        return Severity.MEDIUM
+        # No malicious or suspicious hits — avoid false positives
+        return Severity.LOW
 
     @staticmethod
     def _compute_confidence(results: dict[str, ThreatIntelResult]) -> float:
@@ -323,6 +324,7 @@ class ThreatIntelAnalyzer(BaseAnalyzer):
         """Determine severity from multi-source IOC results."""
         high_count = sum(1 for r in results.values() if r.threat_level == "high")
         medium_count = sum(1 for r in results.values() if r.threat_level == "medium")
+        low_count = sum(1 for r in results.values() if r.threat_level == "low")
 
         if high_count >= 2:
             return Severity.CRITICAL
@@ -331,6 +333,9 @@ class ThreatIntelAnalyzer(BaseAnalyzer):
         if medium_count >= 2:
             return Severity.HIGH
         if medium_count >= 1:
+            return Severity.MEDIUM
+        # Multi-source corroboration of low boosts to MEDIUM
+        if low_count >= 2:
             return Severity.MEDIUM
         return Severity.LOW
 

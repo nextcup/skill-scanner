@@ -79,6 +79,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Production deployment (Gunicorn + Uvicorn)
+production = [
+    "gunicorn==23.0.0",
+    "uvicorn[standard]==0.40.0",
+]
 # Google AI Studio / Gemini SDKs
 google = [
     "google-genai>=1.60,<2",

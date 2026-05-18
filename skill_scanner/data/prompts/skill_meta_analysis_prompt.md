@@ -182,8 +182,8 @@ Respond with **ONLY** a valid JSON object. Output `correlations` and `overall_ri
 {
   "overall_risk_assessment": {
     "risk_level": "CRITICAL|HIGH|MEDIUM|LOW|SAFE",
-    "summary": "One-sentence assessment",
-    "top_priority": "The single most important thing to fix",
+    "summary": "One-sentence assessment(使用简体中文输出)",
+    "top_priority": "The single most important thing to fix(使用简体中文输出)",
     "skill_verdict": "SAFE|SUSPICIOUS|MALICIOUS",
     "verdict_reasoning": "Why this verdict(使用简体中文输出)"
   },
