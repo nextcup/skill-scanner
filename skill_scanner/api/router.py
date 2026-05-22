@@ -43,8 +43,11 @@ try:
 except ImportError:
     raise ImportError("API server requires FastAPI. Install with: pip install fastapi uvicorn python-multipart")
 
+import os
+
 from .. import __version__ as PACKAGE_VERSION
 from ..core.analyzer_factory import build_analyzers
+from ..core.exceptions import SkillLoadError
 from ..core.scan_policy import ScanPolicy
 from ..core.scanner import SkillScanner
 
@@ -123,6 +126,142 @@ CACHE_DIR = Path(tempfile.gettempdir()) / "skill_scanner_cache"  # Shared cache 
 def _ensure_cache_dir():
     """Ensure cache directory exists."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _extract_zip_with_security(
+    zip_path: Path,
+    extract_root: Path,
+    zip_password: str | None = None,
+) -> None:
+    """安全地解压ZIP文件，执行所有必要的安全检查（防止TOCTOU竞态条件）.
+
+    安全策略：
+    1. 使用临时目录先解压，验证后再移动
+    2. 使用受限 umask 确保新文件权限受限
+    3. 在移动前验证所有文件（无符号链接、无路径遍历）
+    4. 验证通过后设置只读权限再移动
+
+    Args:
+        zip_path: ZIP文件路径
+        extract_root: 解压目标目录
+        zip_password: 可选的ZIP密码
+
+    Raises:
+        HTTPException: 对于各种安全/验证错误
+        ValueError: 对于ZIP格式错误
+    """
+    import os
+    import stat
+    import tempfile
+    import zipfile
+
+    try:
+        with zipfile.ZipFile(zip_path, "r") as zip_ref:
+            # 验证条目数量和解压大小
+            entries = [info for info in zip_ref.infolist() if not info.is_dir()]
+            if len(entries) > MAX_ZIP_ENTRIES:
+                raise ValueError(f"ZIP contains {len(entries)} files, exceeding limit of {MAX_ZIP_ENTRIES}")
+            total_uncompressed = sum(info.file_size for info in entries)
+            if total_uncompressed > MAX_ZIP_UNCOMPRESSED_BYTES:
+                raise ValueError(
+                    f"ZIP uncompressed size ({total_uncompressed // (1024 * 1024)} MB) "
+                    f"exceeds limit of {MAX_ZIP_UNCOMPRESSED_BYTES // (1024 * 1024)} MB"
+                )
+
+            # 预检查：ZIP元数据中的符号链接和路径遍历
+            for info in zip_ref.infolist():
+                unix_mode = (info.external_attr >> 16) & 0xFFFF
+                if unix_mode != 0 and stat.S_ISLNK(unix_mode):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="ZIP contains symbolic link entries"
+                    )
+                # 检查路径遍历（在解压前）
+                dest_path = (extract_root / info.filename).resolve()
+                if not dest_path.is_relative_to(extract_root):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="ZIP contains path traversal entries"
+                    )
+
+            # 保存当前 umask 并设置受限权限（只有所有者可访问）
+            old_umask = os.umask(0o077)
+
+            try:
+                # 创建目标目录
+                extract_root.mkdir(parents=True, exist_ok=True)
+
+                # 使用临时目录进行解压（与目标目录同父级）
+                with tempfile.TemporaryDirectory(dir=extract_root.parent, prefix="skill_scan_") as temp_extract:
+                    # 阶段1：解压到临时目录
+                    for info in zip_ref.infolist():
+                        if zip_password:
+                            zip_ref.extract(info, temp_extract, pwd=zip_password.encode('utf-8'))
+                        else:
+                            zip_ref.extract(info, temp_extract)
+
+                    # 阶段2：验证解压后的文件
+                    temp_extract_path = Path(temp_extract)
+                    for extracted_file in temp_extract_path.rglob("*"):
+                        # 拒绝任何符号链接
+                        if extracted_file.is_symlink():
+                            raise HTTPException(
+                                status_code=400,
+                                detail="ZIP extraction produced a symbolic link — rejected"
+                            )
+
+                        # 设置为只读权限（在移动前）
+                        if extracted_file.is_file():
+                            extracted_file.chmod(0o444)
+
+                    # 阶段3：验证通过后，原子性地移动到目标位置
+                    for item in temp_extract_path.iterdir():
+                        target = extract_root / item.name
+                        if target.exists():
+                            # 如果目标已存在，先删除
+                            if target.is_dir():
+                                import shutil
+                                shutil.rmtree(target, ignore_errors=True)
+                            else:
+                                target.unlink()
+                        import shutil
+                        shutil.move(str(item), str(target))
+
+            finally:
+                # 恢复原始 umask
+                os.umask(old_umask)
+
+    except zipfile.BadZipFile as e:
+        error_msg = _redact_password(str(e), zip_password)
+        if "password required" in error_msg.lower() or "bad password" in error_msg.lower():
+            if not zip_password:
+                raise HTTPException(
+                    status_code=400,
+                    detail="ZIP_ENCRYPTED: ZIP file is encrypted. Please provide the password using the 'zip_password' parameter."
+                ) from e
+            else:
+                raise HTTPException(
+                    status_code=401,
+                    detail="ZIP_DECRYPTION_FAILED: Incorrect password for encrypted ZIP file."
+                ) from e
+        raise HTTPException(
+            status_code=400,
+            detail=f"ZIP_FORMAT_ERROR: Invalid ZIP archive - {error_msg}"
+        ) from e
+    except RuntimeError as e:
+        error_msg = _redact_password(str(e), zip_password)
+        if "password required" in error_msg.lower():
+            if not zip_password:
+                raise HTTPException(
+                    status_code=400,
+                    detail="ZIP_ENCRYPTED: ZIP file is encrypted. Please provide the password using the 'zip_password' parameter."
+                ) from e
+            else:
+                raise HTTPException(
+                    status_code=401,
+                    detail="ZIP_DECRYPTION_FAILED: Incorrect password for encrypted ZIP file."
+                ) from e
+        raise
 
 
 _ensure_cache_dir()
@@ -251,6 +390,56 @@ class ScanRequest(BaseModel):
     use_trigger: bool = Field(False, description="Enable trigger specificity analysis")
     enable_meta: bool = Field(False, description="Enable meta-analysis for false positive filtering")
     llm_consensus_runs: int = Field(1, description="Number of LLM consensus runs (majority vote)")
+    strict_mode: bool = Field(False, description="Enable strict validation (fail on missing SKILL.md fields). Default is lenient mode.")
+
+
+# Meta-analysis response models for Swagger documentation
+class MetaAnalysisStatistics(BaseModel):
+    """Statistics of findings by threat category."""
+
+    prompt_injection: int = 0
+    command_injection: int = 0
+    data_exfiltration: int = 0
+    unauthorized_tool_use: int = 0
+    obfuscation: int = 0
+    hardcoded_secrets: int = 0
+    social_engineering: int = 0
+    resource_abuse: int = 0
+    policy_violation: int = 0
+    malware: int = 0
+    harmful_content: int = 0
+    skill_discovery_abuse: int = 0
+    transitive_trust_abuse: int = 0
+    autonomy_abuse: int = 0
+    tool_chaining_abuse: int = 0
+    unicode_steganography: int = 0
+    supply_chain_attack: int = 0
+    credential_theft: int = 0
+
+
+class MetaAnalysisSummary(BaseModel):
+    """Summary of meta-analysis results."""
+
+    total_original: int
+    validated_count: int
+    false_positive_count: int
+    missed_threats_count: int
+    recommendations_count: int
+    statistics: MetaAnalysisStatistics
+    llm_primary_threats: list[str]
+
+
+class MetaAnalysisResponse(BaseModel):
+    """Meta-analysis results."""
+
+    validated_findings: list[dict]
+    false_positives: list[dict]
+    missed_threats: list[dict]
+    priority_order: list[int]
+    correlations: list[dict]
+    recommendations: list[dict]
+    overall_risk_assessment: dict
+    summary: MetaAnalysisSummary
 
 
 class ScanResponse(BaseModel):
@@ -264,7 +453,10 @@ class ScanResponse(BaseModel):
     scan_duration_seconds: float
     timestamp: str
     findings: list[dict]
-    meta_analysis: dict | None = Field(None, description="Meta-analysis results if enabled")
+    meta_analysis: MetaAnalysisResponse | None = Field(
+        None,
+        description="Meta-analysis results if enabled. Contains validated findings, false positives, correlations, recommendations, and summary statistics.",
+    )
 
 
 class HealthResponse(BaseModel):
@@ -296,6 +488,276 @@ class BatchScanRequest(BaseModel):
     use_trigger: bool = False
     enable_meta: bool = Field(False, description="Enable meta-analysis")
     llm_consensus_runs: int = Field(1, description="Number of LLM consensus runs (majority vote)")
+    strict_mode: bool = Field(False, description="Enable strict validation (fail on missing SKILL.md fields). Default is lenient mode.")
+
+
+# ---------------------------------------------------------------------------
+# Error categorization
+# ---------------------------------------------------------------------------
+
+
+def _redact_password(message: str, password: str | None) -> str:
+    """从消息中脱敏密码（使用正则表达式进行大小写不敏感替换）.
+
+    Args:
+        message: 可能包含密码的消息
+        password: 需要脱敏的密码
+
+    Returns:
+        脱敏后的消息
+
+    Note:
+        使用正则表达式避免简单字符串替换被绕过，并处理大小写变化。
+    """
+    if not password:
+        return message
+
+    import re
+
+    try:
+        # 转义特殊正则字符，进行大小写不敏感替换
+        escaped = re.escape(password)
+        return re.sub(escaped, "***REDACTED***", message, flags=re.IGNORECASE)
+    except re.error:
+        # 如果正则转义失败，回退到简单替换
+        return message.replace(password, "***REDACTED***")
+
+
+def _validate_zip_password(zip_password: str | None) -> None:
+    """验证 ZIP 密码参数.
+
+    Args:
+        zip_password: ZIP 密码
+
+    Raises:
+        HTTPException: 如果密码验证失败
+    """
+    if zip_password is not None:
+        if not isinstance(zip_password, str):
+            raise HTTPException(
+                status_code=400,
+                detail="ZIP_PASSWORD_VALIDATION_ERROR: Password must be a string."
+            )
+        if not zip_password:
+            raise HTTPException(
+                status_code=400,
+                detail="ZIP_PASSWORD_VALIDATION_ERROR: Password cannot be empty string."
+            )
+        if len(zip_password) > 128:
+            raise HTTPException(
+                status_code=400,
+                detail="ZIP_PASSWORD_VALIDATION_ERROR: Password too long (max 128 characters)."
+            )
+
+
+# 错误类别到HTTP状态码的映射
+_ERROR_STATUS_MAPPING: dict[str, int] = {
+    # Client errors (4xx)
+    "SKILL_MD_FORMAT_ERROR": 400,
+    "SKILL_MD_NOT_FOUND": 400,
+    "SKILL_MD_LOAD_ERROR": 400,
+    "FILE_ENCODING_ERROR": 400,
+    "FILE_SIZE_ERROR": 413,  # Payload Too Large
+    "FILE_TYPE_ERROR": 415,  # Unsupported Media Type
+    "POLICY_CONFIG_ERROR": 400,
+    "POLICY_PARSE_ERROR": 400,
+    "POLICY_ERROR": 400,
+    "YARA_RULE_ERROR": 400,
+    "CUSTOM_RULES_ERROR": 400,
+    "ZIP_ENCRYPTED": 400,
+    "ZIP_DECRYPTION_FAILED": 401,  # Unauthorized (wrong password)
+    "ZIP_PASSWORD_VALIDATION_ERROR": 400,
+    "FILE_NOT_FOUND": 404,
+    "PERMISSION_ERROR": 403,  # Forbidden
+    "FILESYSTEM_ERROR": 500,
+    # LLM errors
+    "LLM_AUTH_ERROR": 500,  # Server configuration issue
+    "LLM_TIMEOUT_ERROR": 504,  # Gateway Timeout
+    "LLM_RATE_LIMIT_ERROR": 429,  # Too Many Requests
+    "LLM_NETWORK_ERROR": 503,  # Service Unavailable
+    "LLM_ERROR": 500,
+    # AI Defense errors
+    "AIDEFENSE_CONFIG_ERROR": 500,
+    "AIDEFENSE_AUTH_ERROR": 500,
+    "AIDEFENSE_TIMEOUT_ERROR": 504,
+    "AIDEFENSE_ERROR": 500,
+    # VirusTotal errors
+    "VIRUSTOTAL_AUTH_ERROR": 500,
+    "VIRUSTOTAL_NETWORK_ERROR": 503,
+    "VIRUSTOTAL_ERROR": 500,
+    # Unknown
+    "UNKNOWN_ERROR": 500,
+}
+
+
+def _get_error_status_code(category: str) -> int:
+    """获取错误类别对应的HTTP状态码.
+
+    Args:
+        category: 错误类别
+
+    Returns:
+        HTTP状态码
+    """
+    return _ERROR_STATUS_MAPPING.get(category, 500)
+
+
+def _categorize_error(error: Exception) -> tuple[str, str]:
+    """将异常分类为 (问题类别, 错误原因) 元组.
+
+    Returns:
+        Tuple of (category, detailed_reason)
+    """
+    error_msg = str(error)
+    error_type = type(error).__name__
+
+    # SKILL.md 格式错误
+    if isinstance(error, SkillLoadError):
+        if "missing required field: name" in error_msg.lower():
+            return "SKILL_MD_FORMAT_ERROR", "SKILL.md 缺少必需的 name 字段"
+        if "missing required field: description" in error_msg.lower():
+            return "SKILL_MD_FORMAT_ERROR", "SKILL.md 缺少必需的 description 字段"
+        if "yaml frontmatter" in error_msg.lower():
+            return "SKILL_MD_FORMAT_ERROR", f"YAML frontmatter 解析失败: {error_msg}"
+        if "not found" in error_msg.lower() and "skill.md" in error_msg.lower():
+            return "SKILL_MD_NOT_FOUND", "SKILL.md 文件不存在"
+        if "null byte" in error_msg.lower():
+            return "FILE_ENCODING_ERROR", "文件包含空字节，可能为二进制文件"
+        if "utf-8" in error_msg.lower() or "encoding" in error_msg.lower():
+            return "FILE_ENCODING_ERROR", "文件编码错误，需要 UTF-8 格式"
+        if "lenient mode" in error_msg.lower() and ".md file" in error_msg.lower():
+            return "SKILL_MD_NOT_FOUND", "没有找到 SKILL.md 或任何 .md 文件（lenient 模式）"
+        return "SKILL_LOAD_ERROR", error_msg
+
+    # 策略配置错误
+    if "policy" in error_msg.lower() or "策略" in error_msg:
+        if "unknown policy" in error_msg.lower():
+            return "POLICY_CONFIG_ERROR", f"未知的策略名称: {error_msg}"
+        if "not a file" in error_msg.lower():
+            return "POLICY_CONFIG_ERROR", "策略路径不是文件"
+        if "must have a .yaml or .yml extension" in error_msg.lower():
+            return "POLICY_CONFIG_ERROR", "策略文件必须是 .yaml 或 .yml 格式"
+        if "yaml" in error_msg.lower():
+            return "POLICY_PARSE_ERROR", f"策略 YAML 解析失败: {error_msg}"
+        return "POLICY_ERROR", error_msg
+
+    # LLM API 错误
+    if "llm" in error_msg.lower() or "anthropic" in error_msg.lower() or "openai" in error_msg.lower():
+        if "api key" in error_msg.lower() or "authentication" in error_msg.lower():
+            return "LLM_AUTH_ERROR", "LLM API 认证失败，请检查 API key 配置"
+        if "timeout" in error_msg.lower():
+            return "LLM_TIMEOUT_ERROR", "LLM API 请求超时"
+        if "rate limit" in error_msg.lower() or "quota" in error_msg.lower() or "429" in error_msg:
+            return "LLM_RATE_LIMIT_ERROR", "LLM API 配额用尽或触发速率限制"
+        if "connection" in error_msg.lower() or "network" in error_msg.lower():
+            return "LLM_NETWORK_ERROR", "LLM API 网络连接失败"
+        return "LLM_ERROR", error_msg
+
+    # AI Defense 错误
+    if "aidefense" in error_msg.lower() or "ai defense" in error_msg.lower():
+        if "api url" in error_msg.lower() or "endpoint" in error_msg.lower():
+            return "AIDEFENSE_CONFIG_ERROR", "AI Defense API URL 配置错误"
+        if "authentication" in error_msg.lower() or "unauthorized" in error_msg.lower() or "401" in error_msg:
+            return "AIDEFENSE_AUTH_ERROR", "AI Defense 认证失败"
+        if "timeout" in error_msg.lower():
+            return "AIDEFENSE_TIMEOUT_ERROR", "AI Defense API 请求超时"
+        return "AIDEFENSE_ERROR", error_msg
+
+    # VirusTotal 错误
+    if "virustotal" in error_msg.lower() or "vt_" in error_msg.lower():
+        if "api key" in error_msg.lower():
+            return "VIRUSTOTAL_AUTH_ERROR", "VirusTotal API key 无效"
+        if "network" in error_msg.lower() or "connection" in error_msg.lower():
+            return "VIRUSTOTAL_NETWORK_ERROR", "VirusTotal 网络连接失败"
+        return "VIRUSTOTAL_ERROR", error_msg
+
+    # 文件大小/类型错误
+    if "file size" in error_msg.lower() or "too large" in error_msg.lower():
+        return "FILE_SIZE_ERROR", f"文件大小超过限制: {error_msg}"
+    if "binary" in error_msg.lower():
+        return "FILE_TYPE_ERROR", "不支持的二进制文件类型"
+    if "null byte" in error_msg.lower():
+        return "FILE_ENCODING_ERROR", "文件包含空字节，可能为二进制文件"
+    if "encoding" in error_msg.lower() or "utf-8" in error_msg.lower():
+        return "FILE_ENCODING_ERROR", "文件编码错误，需要 UTF-8 格式"
+
+    # 自定义规则错误
+    if "yara" in error_msg.lower():
+        return "YARA_RULE_ERROR", f"YARA 规则错误: {error_msg}"
+    if "custom rules" in error_msg.lower() or "custom_rules" in error_msg.lower():
+        return "CUSTOM_RULES_ERROR", error_msg
+
+    # 文件系统错误
+    if error_type in ("FileNotFoundError", "PermissionError", "OSError"):
+        if "not found" in error_msg.lower():
+            return "FILE_NOT_FOUND", error_msg
+        if "permission" in error_msg.lower():
+            return "PERMISSION_ERROR", "文件系统权限不足"
+        return "FILESYSTEM_ERROR", error_msg
+
+    # 未知错误
+    return "UNKNOWN_ERROR", f"{error_type}: {error_msg}"
+
+
+def _sanitize_stack_trace(stack: str) -> str:
+    """清理堆栈跟踪中的敏感信息（绝对路径、用户信息等）.
+
+    Args:
+        stack: 原始堆栈跟踪字符串
+
+    Returns:
+        清理后的堆栈跟踪字符串
+    """
+    import re
+
+    # 移除用户主路径信息
+    home = os.path.expanduser("~")
+    sanitized = stack
+    if home in sanitized:
+        sanitized = sanitized.replace(home, "~")
+
+    # 移除 Windows 绝对路径（如 C:\Users\user\project\file.py）
+    # 保留最后两段路径
+    sanitized = re.sub(
+        r'File "[A-Z]:\\(?:[^\\]+\\)*([^\\]+\\[^\\]+\.py)"',
+        r'File "\1"',
+        sanitized
+    )
+
+    # 移除 Unix 绝对路径（如 /home/user/project/file.py）
+    # 保留最后两段路径
+    sanitized = re.sub(
+        r'File "/(?:[^/]+/)*([^/]+/[^/]+\.py)"',
+        r'File "\1"',
+        sanitized
+    )
+
+    return sanitized
+
+
+def _build_error_detail(category: str, reason: str, debug_mode: bool = False) -> str:
+    """构建结构化的错误详情.
+
+    Args:
+        category: 问题类别
+        reason: 错误原因
+        debug_mode: 是否在调试模式下返回完整堆栈
+
+    Returns:
+        格式化的错误详情字符串
+
+    Security Note:
+        调试模式会暴露堆栈跟踪信息，应仅在受信任的环境中使用。
+        生产环境中应设置 DEBUG=false 并通过环境变量控制访问。
+    """
+    if debug_mode:
+        import traceback
+
+        stack = "".join(traceback.format_stack()[-3:-1]).strip()
+        # 清理堆栈跟踪中的敏感信息
+        sanitized_stack = _sanitize_stack_trace(stack)
+        return f"{category}: {reason}\n\nStack trace:\n{sanitized_stack}"
+    return f"{category}: {reason}"
 
 
 # ---------------------------------------------------------------------------
@@ -465,7 +927,8 @@ async def scan_skill(
             llm_consensus_runs=request.llm_consensus_runs,
         )
         scanner = SkillScanner(analyzers=analyzers, policy=policy)
-        return scanner.scan_skill(skill_dir)
+        # 使用 strict_mode 参数控制验证模式，默认 lenient
+        return scanner.scan_skill(skill_dir, lenient=not request.strict_mode)
 
     try:
         loop = asyncio.get_running_loop()
@@ -495,8 +958,9 @@ async def scan_skill(
                 logger.info(f"Initializing MetaAnalyzer with API key: {'configured' if meta_api_key else 'MISSING'}")
 
                 meta_analyzer = MetaAnalyzer(policy=policy, api_key=meta_api_key)
+                # Meta 分析也使用 lenient 模式，与主扫描保持一致
                 loader = SkillLoader()
-                skill = loader.load_skill(skill_dir)
+                skill = loader.load_skill(skill_dir, lenient=not request.strict_mode)
 
                 logger.info(f"Starting meta-analysis for {len(result.findings)} findings...")
                 meta_result = await meta_analyzer.analyze_with_findings(
@@ -514,10 +978,20 @@ async def scan_skill(
                 result.analyzers_used.append("meta_analyzer")
 
                 # 保存 meta 分析结果用于响应
-                meta_analysis_result = meta_result.to_dict()
+                # 获取 llm_primary_threats 从 scan_metadata
+                llm_primary_threats = (result.scan_metadata or {}).get("llm_primary_threats", [])
+                meta_analysis_result = meta_result.to_dict(llm_primary_threats=llm_primary_threats)
                 logger.info(f"Meta-analysis completed: {meta_analysis_result.get('summary', {})}")
             except Exception as meta_error:
                 logger.warning("Meta-analysis failed: %s", meta_error)
+
+        # Convert meta_analysis dict to Pydantic model for proper Swagger documentation
+        meta_analysis_response: MetaAnalysisResponse | None = None
+        if meta_analysis_result is not None:
+            try:
+                meta_analysis_response = MetaAnalysisResponse.model_validate(meta_analysis_result)
+            except Exception as e:
+                logger.warning("Failed to convert meta_analysis to response model: %s", e)
 
         scan_id = str(uuid.uuid4())
         return ScanResponse(
@@ -529,14 +1003,19 @@ async def scan_skill(
             scan_duration_seconds=result.scan_duration_seconds,
             timestamp=result.timestamp.isoformat(),
             findings=[f.to_dict() for f in result.findings],
-            meta_analysis=meta_analysis_result,
+            meta_analysis=meta_analysis_response,
         )
 
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception:
-        logger.exception("Scan failed")
-        raise HTTPException(status_code=500, detail="Internal scan error")
+        category, reason = _categorize_error(e)
+        detail = _build_error_detail(category, reason, debug_mode=os.getenv("DEBUG") == "true")
+        raise HTTPException(status_code=_get_error_status_code(category), detail=detail)
+    except Exception as e:
+        category, reason = _categorize_error(e)
+        logger.exception("Scan failed: %s - %s", category, reason)
+        debug_mode = os.getenv("DEBUG") == "true"
+        detail = _build_error_detail(category, reason, debug_mode=debug_mode)
+        raise HTTPException(status_code=_get_error_status_code(category), detail=detail)
 
 
 @router.post("/scan-upload")
@@ -556,10 +1035,14 @@ async def scan_uploaded_skill(
     use_trigger: bool = Form(False, description="Enable trigger specificity analysis"),
     enable_meta: bool = Form(False, description="Enable meta-analysis for FP filtering"),
     llm_consensus_runs: int = Form(1, description="Number of LLM consensus runs"),
+    zip_password: str | None = Form(None, description="Password for encrypted ZIP files"),
 ):
     """Scan an uploaded skill package (ZIP file)."""
     if not file.filename or not file.filename.endswith(".zip"):
         raise HTTPException(status_code=400, detail="File must be a ZIP archive")
+
+    # 验证 ZIP 密码
+    _validate_zip_password(zip_password)
 
     temp_dir = Path(tempfile.mkdtemp(prefix="skill_scanner_"))
 
@@ -581,51 +1064,9 @@ async def scan_uploaded_skill(
                     )
                 f.write(chunk)
 
-        import stat
-        import zipfile
-
-        try:
-            with zipfile.ZipFile(zip_path, "r") as zip_ref:
-                # Enforce entry count and uncompressed size limits
-                entries = [info for info in zip_ref.infolist() if not info.is_dir()]
-                if len(entries) > MAX_ZIP_ENTRIES:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"ZIP contains {len(entries)} files, exceeding limit of {MAX_ZIP_ENTRIES}",
-                    )
-                total_uncompressed = sum(info.file_size for info in entries)
-                if total_uncompressed > MAX_ZIP_UNCOMPRESSED_BYTES:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=(
-                            f"ZIP uncompressed size ({total_uncompressed // (1024 * 1024)} MB) "
-                            f"exceeds limit of {MAX_ZIP_UNCOMPRESSED_BYTES // (1024 * 1024)} MB"
-                        ),
-                    )
-                # Check for path traversal and symlinks using resolved extraction targets.
-                extract_root = (temp_dir / "extracted").resolve()
-                for info in zip_ref.infolist():
-                    # Reject symlink entries — they can escape the extraction directory
-                    unix_mode = (info.external_attr >> 16) & 0xFFFF
-                    if unix_mode != 0 and stat.S_ISLNK(unix_mode):
-                        raise HTTPException(status_code=400, detail="ZIP contains symbolic link entries")
-                    dest_path = (extract_root / info.filename).resolve()
-                    if not dest_path.is_relative_to(extract_root):
-                        raise HTTPException(status_code=400, detail="ZIP contains path traversal entries")
-
-                # Extract member-by-member, verifying no symlink appears on disk
-                extract_root.mkdir(parents=True, exist_ok=True)
-                for info in zip_ref.infolist():
-                    zip_ref.extract(info, extract_root)
-                    dest_path = (extract_root / info.filename).resolve()
-                    if dest_path.is_symlink():
-                        dest_path.unlink()
-                        raise HTTPException(
-                            status_code=400,
-                            detail="ZIP extraction produced a symbolic link — rejected",
-                        )
-        except zipfile.BadZipFile as e:
-            raise HTTPException(status_code=400, detail="Invalid ZIP archive") from e
+        # 使用安全的ZIP解压helper函数
+        extract_root = (temp_dir / "extracted").resolve()
+        _extract_zip_with_security(zip_path, extract_root, zip_password)
 
         extracted_dir = temp_dir / "extracted"
         skill_dirs = list(extracted_dir.rglob("SKILL.md"))
@@ -653,6 +1094,19 @@ async def scan_uploaded_skill(
 
         return await scan_skill(request, vt_api_key=vt_api_key, aidefense_api_key=aidefense_api_key)
 
+    except HTTPException:
+        # HTTPException直接传递（状态码已在抛出时设置）
+        raise
+    except ValueError as e:
+        category, reason = _categorize_error(e)
+        detail = _build_error_detail(category, reason, debug_mode=os.getenv("DEBUG") == "true")
+        raise HTTPException(status_code=_get_error_status_code(category), detail=detail)
+    except Exception as e:
+        category, reason = _categorize_error(e)
+        logger.exception("Upload scan failed: %s - %s", category, reason)
+        debug_mode = os.getenv("DEBUG") == "true"
+        detail = _build_error_detail(category, reason, debug_mode=debug_mode)
+        raise HTTPException(status_code=_get_error_status_code(category), detail=detail)
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -675,6 +1129,8 @@ async def scan_uploaded_skill_async(
     use_trigger: bool = Form(False, description="Enable trigger specificity analysis"),
     enable_meta: bool = Form(False, description="Enable meta-analysis for FP filtering"),
     llm_consensus_runs: int = Form(1, description="Number of LLM consensus runs"),
+    zip_password: str | None = Form(None, description="Password for encrypted ZIP files"),
+    strict_mode: bool = Form(False, description="Enable strict validation (fail on missing SKILL.md fields)"),
 ):
     """异步扫描上传的技能包（ZIP 文件）。
 
@@ -682,6 +1138,9 @@ async def scan_uploaded_skill_async(
     """
     if not file.filename or not file.filename.endswith(".zip"):
         raise HTTPException(status_code=400, detail="File must be a ZIP archive")
+
+    # 验证 ZIP 密码
+    _validate_zip_password(zip_password)
 
     # 创建临时目录（不会在请求结束时清理）
     temp_dir = Path(tempfile.mkdtemp(prefix="skill_scanner_async_"))
@@ -732,6 +1191,8 @@ async def scan_uploaded_skill_async(
             llm_consensus_runs,
             vt_api_key,
             aidefense_api_key,
+            zip_password,
+            strict_mode,
         )
 
         return {
@@ -873,7 +1334,7 @@ def run_batch_scan(
         ):
             import asyncio
 
-            async def _run_batch_meta(scanner_ref, report_ref, policy_ref):
+            async def _run_batch_meta(scanner_ref, report_ref, policy_ref, strict_mode_ref):
                 # 显式传递 API key
                 meta_api_key = os.getenv("SKILL_SCANNER_META_LLM_API_KEY") or os.getenv("SKILL_SCANNER_LLM_API_KEY")
                 logger.info(f"Batch meta-analysis: API key {'configured' if meta_api_key else 'MISSING'}")
@@ -885,7 +1346,8 @@ def run_batch_scan(
                     if result.findings:
                         try:
                             skill_dir_path = Path(result.skill_directory)
-                            skill = scanner_ref.loader.load_skill(skill_dir_path)
+                            # Meta 分析使用与主扫描相同的验证模式
+                            skill = scanner_ref.loader.load_skill(skill_dir_path, lenient=not strict_mode_ref)
                             logger.info(f"Running meta-analysis for skill: {result.skill_name} ({len(result.findings)} findings)")
 
                             meta_result = await meta_analyzer.analyze_with_findings(
@@ -902,7 +1364,16 @@ def run_batch_scan(
                             result.analyzers_used.append("meta_analyzer")
                             meta_results_count += 1
 
-                            summary = meta_result.to_dict().get("summary", {})
+                            # 获取 llm_primary_threats 从 scan_metadata
+                            llm_primary_threats = (result.scan_metadata or {}).get("llm_primary_threats", [])
+                            meta_analysis_dict = meta_result.to_dict(llm_primary_threats=llm_primary_threats)
+
+                            # 将完整的 meta_analysis 添加到 scan_metadata
+                            if result.scan_metadata is None:
+                                result.scan_metadata = {}
+                            result.scan_metadata["meta_analysis"] = meta_analysis_dict
+
+                            summary = meta_analysis_dict.get("summary", {})
                             logger.info(f"Meta-analysis completed for {result.skill_name}: {summary}")
                         except Exception as e:
                             logger.warning(f"Meta-analysis failed for {result.skill_name}: {e}")
@@ -910,7 +1381,7 @@ def run_batch_scan(
                 logger.info(f"Batch meta-analysis completed: {meta_results_count}/{len(report_ref.scan_results)} skills processed")
 
             try:
-                asyncio.run(_run_batch_meta(scanner, report, policy))
+                asyncio.run(_run_batch_meta(scanner, report, policy, request.strict_mode))
             except Exception as e:
                 logger.warning(f"Batch meta-analysis failed: {e}")
 
@@ -930,15 +1401,26 @@ def run_batch_scan(
         )
 
     except Exception as e:
+        category, reason = _categorize_error(e)
+        logger.exception("Batch scan failed: %s - %s", category, reason)
         started_at = (scan_results_cache.get_valid(scan_id) or {}).get("started_at", datetime.now().isoformat())
-        scan_results_cache.set(
-            scan_id,
-            {
-                "status": "error",
-                "started_at": started_at,
-                "error": str(e),
-            },
-        )
+
+        # 构建结构化错误响应
+        error_response = {
+            "status": "error",
+            "started_at": started_at,
+            "error_category": category,
+            "error_reason": reason,
+            "error": str(e),  # 保留原始错误信息以兼容旧客户端
+        }
+
+        # 调试模式添加堆栈信息
+        if os.getenv("DEBUG") == "true":
+            import traceback
+
+            error_response["stack_trace"] = traceback.format_exc()
+
+        scan_results_cache.set(scan_id, error_response)
 
 
 def run_upload_scan(
@@ -959,47 +1441,17 @@ def run_upload_scan(
     llm_consensus_runs: int,
     vt_api_key: str | None = None,
     aidefense_api_key: str | None = None,
+    zip_password: str | None = None,
+    strict_mode: bool = False,
 ):
     """Background task to scan uploaded ZIP file."""
     try:
         import stat
         import zipfile
 
-        # 解压 ZIP 文件
-        try:
-            with zipfile.ZipFile(zip_path, "r") as zip_ref:
-                # 验证条目数量和解压大小
-                entries = [info for info in zip_ref.infolist() if not info.is_dir()]
-                if len(entries) > MAX_ZIP_ENTRIES:
-                    raise ValueError(f"ZIP contains {len(entries)} files, exceeding limit of {MAX_ZIP_ENTRIES}")
-                total_uncompressed = sum(info.file_size for info in entries)
-                if total_uncompressed > MAX_ZIP_UNCOMPRESSED_BYTES:
-                    raise ValueError(
-                        f"ZIP uncompressed size ({total_uncompressed // (1024 * 1024)} MB) "
-                        f"exceeds limit of {MAX_ZIP_UNCOMPRESSED_BYTES // (1024 * 1024)} MB"
-                    )
-
-                # 检查路径遍历和符号链接
-                extract_root = (temp_dir / "extracted").resolve()
-                for info in zip_ref.infolist():
-                    unix_mode = (info.external_attr >> 16) & 0xFFFF
-                    if unix_mode != 0 and stat.S_ISLNK(unix_mode):
-                        raise ValueError("ZIP contains symbolic link entries")
-                    dest_path = (extract_root / info.filename).resolve()
-                    if not dest_path.is_relative_to(extract_root):
-                        raise ValueError("ZIP contains path traversal entries")
-
-                # 解压文件
-                extract_root.mkdir(parents=True, exist_ok=True)
-                for info in zip_ref.infolist():
-                    zip_ref.extract(info, extract_root)
-                    dest_path = (extract_root / info.filename).resolve()
-                    if dest_path.is_symlink():
-                        dest_path.unlink()
-                        raise ValueError("ZIP extraction produced a symbolic link — rejected")
-
-        except zipfile.BadZipFile as e:
-            raise ValueError("Invalid ZIP archive") from e
+        # 解压 ZIP 文件（使用安全的helper函数）
+        extract_root = (temp_dir / "extracted").resolve()
+        _extract_zip_with_security(zip_path, extract_root, zip_password)
 
         # 查找 SKILL.md
         extracted_dir = temp_dir / "extracted"
@@ -1036,7 +1488,8 @@ def run_upload_scan(
 
         # 执行扫描
         scanner = SkillScanner(analyzers=analyzers, policy=policy)
-        result = scanner.scan_skill(skill_dir)
+        # API 默认使用 lenient 模式，以容忍缺少字段的 SKILL.md
+        result = scanner.scan_skill(skill_dir, lenient=not strict_mode)
 
         # Meta 分析
         meta_analysis_result = None
@@ -1055,8 +1508,9 @@ def run_upload_scan(
                 logger.info(f"Async meta-analysis: API key {'configured' if meta_api_key else 'MISSING'}")
 
                 meta_analyzer = MetaAnalyzer(policy=policy, api_key=meta_api_key)
+                # Meta 分析使用与主扫描相同的验证模式
                 loader = SkillLoader()
-                skill = loader.load_skill(skill_dir)
+                skill = loader.load_skill(skill_dir, lenient=not strict_mode)
 
                 logger.info(f"Starting async meta-analysis for {len(result.findings)} findings...")
 
@@ -1079,7 +1533,9 @@ def run_upload_scan(
                 )
                 result.findings = filtered_findings
                 result.analyzers_used.append("meta_analyzer")
-                meta_analysis_result = meta_result.to_dict()
+                # 获取 llm_primary_threats 从 scan_metadata
+                llm_primary_threats = (result.scan_metadata or {}).get("llm_primary_threats", [])
+                meta_analysis_result = meta_result.to_dict(llm_primary_threats=llm_primary_threats)
                 logger.info(f"Async meta-analysis completed: {meta_analysis_result.get('summary', {})}")
 
             except Exception as meta_error:
@@ -1108,16 +1564,26 @@ def run_upload_scan(
         )
 
     except Exception as e:
-        logger.exception("Async upload scan failed")
+        category, reason = _categorize_error(e)
+        logger.exception("Async upload scan failed: %s - %s", category, reason)
         started_at = (scan_results_cache.get_valid(scan_id) or {}).get("started_at", datetime.now().isoformat())
-        scan_results_cache.set(
-            scan_id,
-            {
-                "status": "error",
-                "started_at": started_at,
-                "error": str(e),
-            },
-        )
+
+        # 构建结构化错误响应
+        error_response = {
+            "status": "error",
+            "started_at": started_at,
+            "error_category": category,
+            "error_reason": reason,
+            "error": str(e),  # 保留原始错误信息以兼容旧客户端
+        }
+
+        # 调试模式添加堆栈信息
+        if os.getenv("DEBUG") == "true":
+            import traceback
+
+            error_response["stack_trace"] = traceback.format_exc()
+
+        scan_results_cache.set(scan_id, error_response)
 
     finally:
         # 清理临时目录

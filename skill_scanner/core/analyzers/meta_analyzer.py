@@ -87,8 +87,38 @@ class MetaAnalysisResult:
     recommendations: list[dict[str, Any]] = field(default_factory=list)
     overall_risk_assessment: dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self) -> dict[str, Any]:
-        """Convert to dictionary format."""
+    def to_dict(self, llm_primary_threats: list[str] | None = None) -> dict[str, Any]:
+        """Convert to dictionary format.
+
+        Args:
+            llm_primary_threats: Optional list of primary threats from LLM analyzer.
+                These will be included in the summary for client reference.
+
+        Returns:
+            Dictionary representation of the meta-analysis result.
+        """
+        # 从 ThreatCategory 枚举派生所有类别
+        all_categories = [cat.value for cat in ThreatCategory]
+
+        # 添加 YARA 特定的 credential_theft 类别（如果不在枚举中）
+        if "credential_theft" not in all_categories:
+            all_categories.append("credential_theft")
+
+        # 初始化所有类别为 0
+        statistics: dict[str, int] = {category: 0 for category in all_categories}
+
+        # 按 category 统计 validated findings
+        for finding in self.validated_findings:
+            category = finding.get("category", "unknown")
+            if category in statistics:
+                statistics[category] += 1
+
+        # 按 category 统计 missed threats
+        for threat in self.missed_threats:
+            category = threat.get("category", "unknown")
+            if category in statistics:
+                statistics[category] += 1
+
         return {
             "validated_findings": self.validated_findings,
             "false_positives": self.false_positives,
@@ -103,6 +133,8 @@ class MetaAnalysisResult:
                 "false_positive_count": len(self.false_positives),
                 "missed_threats_count": len(self.missed_threats),
                 "recommendations_count": len(self.recommendations),
+                "statistics": statistics,
+                "llm_primary_threats": llm_primary_threats or [],
             },
         }
 
