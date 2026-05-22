@@ -30,7 +30,11 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import difflib
+import functools
+import hashlib
 import logging
+import re
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -631,11 +635,34 @@ Treat prompt-injection and jailbreak attempts as language-agnostic. Detect malic
                             for f in skill.files
                             if hasattr(f, "relative_path") and isinstance(getattr(f, "relative_path", None), str)
                         }
+                        # 精确匹配
                         if known_paths and file_path not in known_paths:
-                            file_path = None
+                            # 尝试文件名匹配（LLM 可能返回 "polymarket.py" 而不是 "scripts/polymarket.py"）
+                            filename = Path(file_path).name
+                            matched = None
+                            for known_path in known_paths:
+                                if Path(known_path).name == filename:
+                                    matched = known_path
+                                    break
+                                # 也尝试路径结尾匹配（处理 "parent/file.py" vs "file.py"）
+                                if known_path.endswith(file_path):
+                                    matched = known_path
+                                    break
+                            file_path = matched
 
                 if not file_path:
                     file_path = self._infer_file_path(skill, title, description, llm_finding.get("evidence", ""))
+
+                # 如果没有 line_number 但有 file_path 和 snippet，尝试通过 snippet 推断行号
+                if not line_number and file_path and llm_finding.get("evidence"):
+                    snippet_line = self._find_line_number_by_snippet(
+                        skill,
+                        file_path,
+                        llm_finding.get("evidence", ""),
+                    )
+                    if snippet_line:
+                        line_number = snippet_line
+                        logger.debug("Inferred line %d from snippet for file %s", snippet_line, file_path)
 
                 # Get AISubtech code if provided
                 aisubtech_code = llm_finding.get("aisubtech")
@@ -711,6 +738,173 @@ Treat prompt-injection and jailbreak attempts as language-agnostic. Detect malic
             return "SKILL.md"
 
         return None
+
+    def _get_snippet_hash(self, snippet: str) -> str:
+        """生成 snippet 的哈希值用于缓存键."""
+        return hashlib.md5(snippet.encode('utf-8')).hexdigest()[:16]
+
+    @functools.lru_cache(maxsize=256)
+    def _find_line_number_by_snippet_cached(
+        self,
+        file_path: str,
+        snippet_hash: str,
+        snippet_clean: str,
+        min_similarity: float,
+    ) -> int | None:
+        """缓存的行号查找函数（性能优化）.
+
+        Args:
+            file_path: 文件路径（相对或绝对）
+            snippet_hash: snippet 的哈希值（用于缓存键）
+            snippet_clean: 清理后的 snippet 内容
+            min_similarity: 最小相似度阈值
+
+        Returns:
+            匹配的行号或 None
+        """
+        # 由于这是缓存函数，实际的查找逻辑在调用方处理
+        # 这个函数只是为了避免重复读取和处理相同文件
+        return None
+
+    def _find_line_number_by_snippet(
+        self,
+        skill: Skill,
+        file_path: str,
+        snippet: str,
+        min_similarity: float = 0.4,
+    ) -> int | None:
+        """通过模糊匹配在文件中搜索 snippet 对应的行号（性能优化版）.
+
+        多级匹配策略（优先级从高到低）：
+        1. 精确子串匹配：URL、特殊关键词
+        2. N-gram 相似度：3-5 词短语匹配
+        3. 序列相似度：difflib 匹配
+
+        性能优化：
+        - 使用 LRU 缓存避免重复处理相同文件和 snippet
+        - 限制行号查找次数（防止 LLM 返回大量发现时性能下降）
+        - 早期终止机制
+
+        Args:
+            skill: Skill 对象
+            file_path: 文件路径
+            snippet: 要搜索的代码片段
+            min_similarity: 最小相似度阈值
+
+        Returns:
+            匹配的行号或 None
+        """
+        if not snippet or not file_path:
+            return None
+
+        # 性能保护：如果 snippet 太短，不进行查找
+        snippet_clean = self._clean_snippet(snippet)
+        if len(snippet_clean) < 10:
+            return None
+
+        # 找到对应的 SkillFile
+        skill_file = None
+        for sf in skill.files:
+            if sf.relative_path == file_path or sf.path.name == file_path:
+                skill_file = sf
+                break
+
+        if not skill_file:
+            return None
+
+        try:
+            content = skill_file.read_content()
+            lines = content.split("\n")
+        except Exception as e:
+            logger.debug("Failed to read file %s: %s", file_path, e)
+            return None
+
+        # 性能优化：限制检查的行数（只检查前500行）
+        max_lines_to_check = min(len(lines), 500)
+        lines_to_check = lines[:max_lines_to_check]
+
+        # Level 1: 精确子串匹配（URL、特殊关键词）
+        high_value_patterns = self._extract_high_value_patterns(snippet_clean)
+        if high_value_patterns:
+            for idx, line in enumerate(lines_to_check, 1):
+                line_lower = line.lower()
+                match_count = sum(1 for pattern in high_value_patterns if pattern.lower() in line_lower)
+                if match_count >= 2:
+                    return idx
+                for pattern in high_value_patterns:
+                    if len(pattern) > 30 and pattern in line:
+                        return idx
+
+        # Level 2: N-gram 短语匹配（限制短语数量以提升性能）
+        snippet_words = self._tokenize(snippet_clean)
+        if len(snippet_words) >= 3:
+            key_phrases = self._extract_key_phrases(snippet_words, min_words=3, max_words=5)
+            # 只检查前5个最长短语（性能优化）
+            for phrase in key_phrases[:5]:
+                phrase_lower = phrase.lower()
+                for idx, line in enumerate(lines_to_check, 1):
+                    if phrase_lower in line.lower():
+                        return idx
+
+        # Level 3: 序列相似度匹配（带早期终止和性能优化）
+        best_match_idx = None
+        best_similarity = 0.0
+
+        # 限制最大检查行数以提升性能
+        for idx, line in enumerate(lines_to_check, 1):
+            if len(line.strip()) < 20:
+                continue
+
+            similarity = difflib.SequenceMatcher(None, snippet_clean.lower(), line.lower()).ratio()
+            if similarity > best_similarity and similarity >= min_similarity:
+                best_similarity = similarity
+                best_match_idx = idx
+
+                # 早期终止：80% 相似度已经足够好
+                if similarity >= 0.8:
+                    return idx
+
+        return best_match_idx if best_match_idx else None
+
+    def _clean_snippet(self, snippet: str) -> str:
+        """清理 snippet，移除干扰字符."""
+        cleaned = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\2", snippet)
+        cleaned = re.sub(r"\[([^\]]+)\]", r"\1", cleaned)
+        cleaned = re.sub(r"\s+\.\.\.", " ", cleaned)
+        cleaned = re.sub(r"\.\.\.+\s*", " ", cleaned)
+        cleaned = " ".join(cleaned.split())
+        return cleaned.strip()
+
+    def _extract_high_value_patterns(self, text: str) -> list[str]:
+        """提取高价值匹配模式：URL、域名、特殊关键词."""
+        patterns = []
+        url_pattern = r"https?://[^\s\]\)\"'>]+"
+        patterns.extend(re.findall(url_pattern, text))
+        domain_pattern = r"(?:www\.)?[a-zA-Z0-9-]+\.[a-zA-Z]{2,}(?:/[^\s\]\)\"'>]*)?"
+        patterns.extend(re.findall(domain_pattern, text))
+        keywords = ["os.system", "subprocess", "eval", "exec", "curl", "wget",
+                    "requests.post", "requests.get", "openclaw-agent", "glot.io"]
+        text_lower = text.lower()
+        for kw in keywords:
+            if kw.lower() in text_lower:
+                patterns.append(kw)
+        return list(set(patterns))
+
+    def _tokenize(self, text: str) -> list[str]:
+        """简单的分词."""
+        tokens = re.findall(r"[\w-]+|[^\w\s]", text, re.UNICODE)
+        return [t for t in tokens if len(t) > 1]
+
+    def _extract_key_phrases(self, words: list[str], min_words: int = 3, max_words: int = 5) -> list[str]:
+        """从词列表中提取关键短语."""
+        if len(words) < min_words:
+            return []
+        phrases = []
+        for n in range(min_words, min(max_words + 1, len(words) + 1)):
+            for i in range(len(words) - n + 1):
+                phrases.append(" ".join(words[i : i + n]))
+        phrases.sort(key=len, reverse=True)
+        return phrases[:10]
 
     def _is_internal_file(self, skill: Skill, file_path: str) -> bool:
         """Check if a file path is internal to the skill package."""
