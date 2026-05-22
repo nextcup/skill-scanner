@@ -388,7 +388,7 @@ class TestBatchScan:
 
         class DummyLoader:
             @staticmethod
-            def load_skill(_path):
+            def load_skill(_path, *, lenient=False):
                 class _Skill:
                     name = "synthetic-skill"
 
