@@ -6,7 +6,7 @@ The Skill Scanner API Server provides a REST interface for uploading and scannin
 > **Development Use Only**
 > This server is unauthenticated by default. Do not expose it on any interface except localhost -- the APIs can be used for denial-of-wallet attacks on your API keys or denial-of-service via uploaded zipbombs. See [API Operations](api-operations.md#security) for authentication and hardening guidance.
 
-**Technology**: FastAPI with async support &bull; **Endpoints**: 7 REST endpoints &bull; **Docs**: auto-generated Swagger/ReDoc
+**Technology**: FastAPI with async support &bull; **Endpoints**: 9 REST endpoints &bull; **Docs**: auto-generated Swagger/ReDoc
 
 ## Starting the Server
 
@@ -32,7 +32,9 @@ run_server(host="127.0.0.1", port=8000, reload=False)
 | `/` | GET | Service metadata and links |
 | `/health` | GET | Server status and available analyzers |
 | `/scan` | POST | Scan a skill by local directory path |
-| `/scan-upload` | POST | Upload a skill ZIP and scan it |
+| `/scan-upload` | POST | Upload a skill ZIP and scan it (synchronous) |
+| `/scan-upload-async` | POST | Upload a skill ZIP and scan it (asynchronous) |
+| `/scan-upload-async/{scan_id}` | GET | Poll async upload scan status/results |
 | `/scan-batch` | POST | Start an async batch scan |
 | `/scan-batch/{scan_id}` | GET | Poll batch scan status/results |
 | `/analyzers` | GET | List all available analyzers |
@@ -98,7 +100,9 @@ app.include_router(router)
 ## Performance
 
 - `/scan-batch` runs as a FastAPI background task and is polled by `scan_id`
-- Batch status/results are stored in an in-memory bounded cache (`max 1000` entries, `1 hour` TTL)
+- `/scan-upload-async` runs uploads as background tasks for long-running scans
+- Batch and async scan status/results are stored in a file-based cache (`max 1000` entries, `1 hour` TTL)
+- Cache directory: `/tmp/skill_scanner_cache/` (auto-created, supports multi-worker deployments)
 - `/scan` and `/scan-upload` execute scans via threadpool workers to avoid blocking the event loop
 - Throughput depends on analyzer mix, model/provider latency, and uploaded archive size
 

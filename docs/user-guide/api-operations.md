@@ -203,3 +203,116 @@ export SKILL_SCANNER_LLM_MODEL=anthropic/claude-sonnet-4-20250514
 - Enable caching for repeated scans
 - Use batch endpoints instead of individual scans
 - Consider horizontal scaling
+
+## Asynchronous Scan Endpoints
+
+For large files or long-running scans, use the asynchronous endpoints to avoid timeout issues.
+
+### POST /scan-upload-async
+
+Upload and scan a skill package asynchronously:
+
+```bash
+curl -X POST 'http://localhost:8081/scan-upload-async' \
+  -H 'Content-Type: multipart/form-data' \
+  -F 'file=@skill.zip' \
+  -F 'use_llm=true' \
+  -F 'enable_meta=true'
+```
+
+Immediate response:
+```json
+{
+  "scan_id": "uuid",
+  "status": "processing",
+  "message": "scan-upload started. Use GET /scan-upload-async/{scan_id} to check status."
+}
+```
+
+### GET /scan-upload-async/{scan_id}
+
+Query asynchronous scan result:
+
+```bash
+curl -X GET "http://localhost:8081/scan-upload-async/{scan_id}"
+```
+
+Response states:
+- `processing` - Scan in progress
+- `completed` - Scan complete with full results
+- `error` - Scan failed with error message
+
+**Processing response:**
+```json
+{
+  "scan_id": "uuid",
+  "status": "processing",
+  "message": "Scan is still in progress."
+}
+```
+
+**Completed response:**
+```json
+{
+  "scan_id": "uuid",
+  "status": "completed",
+  "started_at": "2026-05-18T10:30:00",
+  "completed_at": "2026-05-18T10:30:15",
+  "result": {
+    "scan_id": "scan_abc123",
+    "skill_name": "my-skill",
+    "is_safe": true,
+    "max_severity": "low",
+    "findings_count": 1,
+    "scan_duration_seconds": 15.234,
+    "timestamp": "2026-05-18T10:30:15Z",
+    "findings": [...]
+  }
+}
+```
+
+**Error response:**
+```json
+{
+  "scan_id": "uuid",
+  "status": "error",
+  "error": "Error message describing what went wrong."
+}
+```
+
+### CI/CD Integration with Async Endpoints
+
+```yaml
+- name: Scan Skills (Async)
+  run: |
+    # Start async scan
+    SCAN_RESPONSE=$(curl -X POST http://localhost:8000/scan-upload-async \
+      -F "file=@skill.zip")
+    SCAN_ID=$(echo "$SCAN_RESPONSE" | jq -r '.scan_id')
+
+    # Poll for results
+    while true; do
+      RESULT=$(curl -s http://localhost:8000/scan-upload-async/$SCAN_ID)
+      STATUS=$(echo "$RESULT" | jq -r '.status')
+
+      if [ "$STATUS" = "completed" ]; then
+        echo "Scan completed successfully"
+        echo "$RESULT" > scan_results.json
+        break
+      elif [ "$STATUS" = "error" ]; then
+        echo "Scan failed:"
+        echo "$RESULT" | jq -r '.error'
+        exit 1
+      fi
+
+      echo "Scan still running... waiting 10 seconds"
+      sleep 10
+    done
+
+    # Check results
+    CRITICAL=$(jq '.result.findings | map(.severity == "critical") | length' scan_results.json)
+    if [ "$CRITICAL" -gt 0 ]; then
+      echo "Critical findings detected!"
+      exit 1
+    fi
+```

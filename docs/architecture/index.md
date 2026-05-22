@@ -216,6 +216,8 @@ Current endpoints:
 - `GET /health`
 - `POST /scan`
 - `POST /scan-upload`
+- `POST /scan-upload-async`
+- `GET /scan-upload-async/{scan_id}`
 - `POST /scan-batch`
 - `GET /scan-batch/{scan_id}`
 - `GET /analyzers`

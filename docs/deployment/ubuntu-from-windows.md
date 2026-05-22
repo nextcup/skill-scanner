@@ -272,6 +272,63 @@ wrk -t4 -c100 -d30s http://localhost:8000/health
 
 ## 故障排查
 
+### WSL 网络问题
+
+如果在 WSL Ubuntu 中网络不可用（只有 loopback 接口）：
+
+```bash
+# 诊断：检查网络接口
+ip a
+# 如果只有 lo 接口，没有 eth0，说明网络未正确初始化
+
+# 解决方案：完全重启 WSL
+wsl --shutdown
+# 等待几秒后重新启动
+wsl -d Ubuntu
+
+# 验证网络恢复
+ip a  # 应该看到 eth0, eth1 等接口
+ping -c 2 8.8.8.8
+```
+
+**常见原因：**
+- WSL 长时间运行导致网络堆栈状态损坏
+- Docker 网络与 WSL 网络冲突
+- Windows 睡眠/唤醒后 WSL 网络未正确恢复
+
+### 脚本 CRLF 行尾问题
+
+如果在 Linux 上执行脚本时出现 `/bin/bash^M` 错误：
+
+```bash
+# 错误信息
+./deploy.sh: /bin/bash^M: No such file or directory
+
+# 原因：文件包含 Windows 行尾符（CRLF）
+# 解决方案 1：使用 dos2unix
+yum install -y dos2unix  # RHEL/CentOS
+apt install -y dos2unix   # Debian/Ubuntu
+dos2unix deploy.sh
+
+# 解决方案 2：使用 sed
+sed -i 's/\r$//' deploy.sh
+
+# 解决方案 3：批量转换所有 .sh 文件
+find . -name "*.sh" -exec dos2unix {} \;
+```
+
+**预防方法：**
+```bash
+# Git 配置自动转换
+git config --global core.autocrlf input
+
+# VS Code 设置
+# .vscode/settings.json
+{
+  "files.eol": "\n"
+}
+```
+
 ### 容器无法启动
 
 ```bash
