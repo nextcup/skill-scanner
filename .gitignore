@@ -127,6 +127,7 @@ docs/reference/api-endpoint-reference.md
 docs/reference/cli-command-reference.md
 docs/reference/configuration-reference.md
 docs/user-guide/api-endpoints-detail.md
+docs/UI
 
 # docker images
 skill-scanner-linux-amd64.tar

@@ -512,7 +512,6 @@ name = "cisco-ai-skill-scanner"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
-    { name = "click" },
     { name = "confusable-homoglyphs" },
     { name = "fastapi" },
     { name = "httpx" },
@@ -573,38 +572,37 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "anthropic", specifier = "==0.76.0" },
-    { name = "azure-identity", marker = "extra == 'all'", specifier = "==1.25.1" },
-    { name = "azure-identity", marker = "extra == 'azure'", specifier = "==1.25.1" },
-    { name = "boto3", marker = "extra == 'all'", specifier = "==1.42.37" },
-    { name = "boto3", marker = "extra == 'bedrock'", specifier = "==1.42.37" },
-    { name = "click", specifier = "==8.3.1" },
-    { name = "confusable-homoglyphs", specifier = "==3.3.1" },
-    { name = "fastapi", specifier = "==0.128.0" },
-    { name = "google-cloud-aiplatform", marker = "extra == 'all'", specifier = "==1.135.0" },
-    { name = "google-cloud-aiplatform", marker = "extra == 'vertex'", specifier = "==1.135.0" },
-    { name = "google-genai", marker = "extra == 'all'", specifier = "==1.60.0" },
-    { name = "google-genai", marker = "extra == 'google'", specifier = "==1.60.0" },
-    { name = "google-generativeai", marker = "extra == 'all'", specifier = "==0.8.6" },
-    { name = "google-generativeai", marker = "extra == 'google'", specifier = "==0.8.6" },
+    { name = "anthropic", specifier = ">=0.50,<1" },
+    { name = "azure-identity", marker = "extra == 'all'", specifier = ">=1.20,<2" },
+    { name = "azure-identity", marker = "extra == 'azure'", specifier = ">=1.20,<2" },
+    { name = "boto3", marker = "extra == 'all'", specifier = ">=1.40,<2" },
+    { name = "boto3", marker = "extra == 'bedrock'", specifier = ">=1.40,<2" },
+    { name = "confusable-homoglyphs", specifier = ">=3.3,<4" },
+    { name = "fastapi", specifier = ">=0.115,<1" },
+    { name = "google-cloud-aiplatform", marker = "extra == 'all'", specifier = ">=1.130,<2" },
+    { name = "google-cloud-aiplatform", marker = "extra == 'vertex'", specifier = ">=1.130,<2" },
+    { name = "google-genai", marker = "extra == 'all'", specifier = ">=1.60,<2" },
+    { name = "google-genai", marker = "extra == 'google'", specifier = ">=1.60,<2" },
+    { name = "google-generativeai", marker = "extra == 'all'", specifier = ">=0.8,<1" },
+    { name = "google-generativeai", marker = "extra == 'google'", specifier = ">=0.8,<1" },
     { name = "gunicorn", marker = "extra == 'production'", specifier = "==23.0.0" },
-    { name = "httpx", specifier = "==0.28.1" },
-    { name = "litellm", specifier = "==1.83.0" },
-    { name = "magika", specifier = "==1.0.1" },
-    { name = "oletools", specifier = "==0.60.2" },
-    { name = "openai", specifier = "==2.15.0" },
-    { name = "pdfid", specifier = "==1.1.3" },
-    { name = "pydantic", specifier = "==2.12.5" },
-    { name = "python-dotenv", specifier = "==1.2.1" },
-    { name = "python-frontmatter", specifier = "==1.1.0" },
-    { name = "python-multipart", specifier = "==0.0.22" },
-    { name = "pyyaml", specifier = "==6.0.3" },
-    { name = "rich", specifier = "==14.2.0" },
-    { name = "tabulate", specifier = "==0.9.0" },
-    { name = "textual", specifier = "==7.5.0" },
-    { name = "uvicorn", extras = ["standard"], specifier = "==0.40.0" },
+    { name = "httpx", specifier = ">=0.27,<1" },
+    { name = "litellm", specifier = ">=1.83.7,<2" },
+    { name = "magika", specifier = ">=1.0,<2" },
+    { name = "oletools", specifier = ">=0.60,<1" },
+    { name = "openai", specifier = ">=2.0,<3" },
+    { name = "pdfid", specifier = ">=1.1,<2" },
+    { name = "pydantic", specifier = ">=2.10,<3" },
+    { name = "python-dotenv", specifier = ">=1.0,<2" },
+    { name = "python-frontmatter", specifier = ">=1.1,<2" },
+    { name = "python-multipart", specifier = ">=0.0.22,<0.1" },
+    { name = "pyyaml", specifier = ">=6.0,<7" },
+    { name = "rich", specifier = ">=14.0,<15" },
+    { name = "tabulate", specifier = ">=0.9,<1" },
+    { name = "textual", specifier = ">=7.0,<8" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.34,<1" },
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'production'", specifier = "==0.40.0" },
-    { name = "yara-x", specifier = "==1.13.0" },
+    { name = "yara-x", specifier = ">=1.10,<2" },
 ]
 provides-extras = ["all", "azure", "bedrock", "google", "production", "vertex"]
 
@@ -614,7 +612,7 @@ dev = [
     { name = "mypy", specifier = "==1.19.1" },
     { name = "pip-audit", specifier = "==2.10.0" },
     { name = "pre-commit", specifier = "==4.5.1" },
-    { name = "pytest", specifier = "==9.0.2" },
+    { name = "pytest", specifier = "==9.0.3" },
     { name = "pytest-asyncio", specifier = "==1.3.0" },
     { name = "pytest-cov", specifier = "==7.0.0" },
     { name = "ruff", specifier = "==0.14.12" },
@@ -917,7 +915,6 @@ dependencies = [
     { name = "pydantic" },
     { name = "starlette" },
     { name = "typing-extensions" },
-    { name = "typing-inspection" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/52/08/8c8508db6c7b9aae8f7175046af41baad690771c9bcde676419965e338c7/fastapi-0.128.0.tar.gz", hash = "sha256:1cc179e1cef10a6be60ffe429f79b829dce99d8de32d7acb7e6c8dfdf7f2645a", size = 365682, upload-time = "2025-12-27T15:21:13.714Z" }
 wheels = [
@@ -1960,7 +1957,7 @@ wheels = [
 
 [[package]]
 name = "litellm"
-version = "1.83.0"
+version = "1.85.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -1976,9 +1973,9 @@ dependencies = [
     { name = "tiktoken" },
     { name = "tokenizers" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/22/92/6ce9737554994ca8e536e5f4f6a87cc7c4774b656c9eb9add071caf7d54b/litellm-1.83.0.tar.gz", hash = "sha256:860bebc76c4bb27b4cf90b4a77acd66dba25aced37e3db98750de8a1766bfb7a", size = 17333062, upload-time = "2026-03-31T05:08:25.331Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/3b/d5/3c9b560db2ffa9e498655d0dfd74f408bc5b32ede858b5731c2a5fa4c752/litellm-1.85.0.tar.gz", hash = "sha256:babdd569809af913d08a08a7eb55df1ed3e6a3960ee365c6cef4ad031c9bc72a", size = 15344387, upload-time = "2026-05-17T01:59:15.97Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/19/2c/a670cc050fcd6f45c6199eb99e259c73aea92edba8d5c2fc1b3686d36217/litellm-1.83.0-py3-none-any.whl", hash = "sha256:88c536d339248f3987571493015784671ba3f193a328e1ea6780dbebaa2094a8", size = 15610306, upload-time = "2026-03-31T05:08:21.987Z" },
+    { url = "https://files.pythonhosted.org/packages/1c/38/e6a4abb062e039d18d59538cc4e6fc370c2c10cd2bff4a2e546acb69dcb9/litellm-1.85.0-py3-none-any.whl", hash = "sha256:2bb449153610691faffd76f5b94a8c29e4b66fc5394156ebf54fd4fe92759b1a", size = 16978229, upload-time = "2026-05-17T01:59:11.902Z" },
 ]
 
 [[package]]
@@ -2654,7 +2651,7 @@ wheels = [
 
 [[package]]
 name = "openai"
-version = "2.15.0"
+version = "2.37.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -2666,9 +2663,9 @@ dependencies = [
     { name = "tqdm" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/94/f4/4690ecb5d70023ce6bfcfeabfe717020f654bde59a775058ec6ac4692463/openai-2.15.0.tar.gz", hash = "sha256:42eb8cbb407d84770633f31bf727d4ffb4138711c670565a41663d9439174fba", size = 627383, upload-time = "2026-01-09T22:10:08.603Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/32/50/5901f01ef14e6c27788beb91e54fef5d6204fb5fb9e97402fc8a14de2e32/openai-2.37.0.tar.gz", hash = "sha256:f4bc562cc5f3a43d40d678105572d9d44765f6e0f50c125f63055419b72f4bd9", size = 754706, upload-time = "2026-05-15T22:30:35.428Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b5/df/c306f7375d42bafb379934c2df4c2fa3964656c8c782bac75ee10c102818/openai-2.15.0-py3-none-any.whl", hash = "sha256:6ae23b932cd7230f7244e52954daa6602716d6b9bf235401a107af731baea6c3", size = 1067879, upload-time = "2026-01-09T22:10:06.446Z" },
+    { url = "https://files.pythonhosted.org/packages/ed/4c/bce61680d0699a78a405fd9a67989b175ba020590428831aab2ab1d2be7c/openai-2.37.0-py3-none-any.whl", hash = "sha256:814633888b8f3b1ffd6615697c6e4ef93632d08b7c2e28c8c5ef3556e5a10107", size = 1303238, upload-time = "2026-05-15T22:30:32.767Z" },
 ]
 
 [[package]]
@@ -3167,7 +3164,7 @@ wheels = [
 
 [[package]]
 name = "pytest"
-version = "9.0.2"
+version = "9.0.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "colorama", marker = "sys_platform == 'win32'" },
@@ -3178,9 +3175,9 @@ dependencies = [
     { name = "pygments" },
     { name = "tomli", marker = "python_full_version < '3.11'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d1/db/7ef3487e0fb0049ddb5ce41d3a49c235bf9ad299b6a25d5780a89f19230f/pytest-9.0.2.tar.gz", hash = "sha256:75186651a92bd89611d1d9fc20f0b4345fd827c41ccd5c299a868a05d70edf11", size = 1568901, upload-time = "2025-12-06T21:30:51.014Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/7d/0d/549bd94f1a0a402dc8cf64563a117c0f3765662e2e668477624baeec44d5/pytest-9.0.3.tar.gz", hash = "sha256:b86ada508af81d19edeb213c681b1d48246c1a91d304c6c81a427674c17eb91c", size = 1572165, upload-time = "2026-04-07T17:16:18.027Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/3b/ab/b3226f0bd7cdcf710fbede2b3548584366da3b19b5021e74f5bde2a8fa3f/pytest-9.0.2-py3-none-any.whl", hash = "sha256:711ffd45bf766d5264d487b917733b453d917afd2b0ad65223959f59089f875b", size = 374801, upload-time = "2025-12-06T21:30:49.154Z" },
+    { url = "https://files.pythonhosted.org/packages/d4/24/a372aaf5c9b7208e7112038812994107bc65a84cd00e0354a88c2c77a617/pytest-9.0.3-py3-none-any.whl", hash = "sha256:2c5efc453d45394fdd706ade797c0a81091eccd1d6e4bccfcd476e2b8e0ab5d9", size = 375249, upload-time = "2026-04-07T17:16:16.13Z" },
 ]
 
 [[package]]
